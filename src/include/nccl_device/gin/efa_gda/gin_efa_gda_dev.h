@@ -54,6 +54,17 @@ struct nccl_ofi_gin_gdaki_dev_endpoint_handle {
    * until (submitted_count - *local_cntr_value + batch_size)
    * <= sq_size before reserving slots. */
   uint32_t sq_size;
+
+  uint32_t putvalue_pad;
+
+  /* Base address of this endpoint's slice of the shared PutValue
+   * source slot pool. The pool is registered as a single MR on the
+   * plugin side; the same lkey (dev_handle->putvalue_lkey) covers
+   * every slice. Slice size is implied by sq_size; per-call slot
+   * byte offset is
+   *   (submitted_count % sq_size) * dev_handle->putvalue_slot_size.
+   * Set by the plugin at createContext time; read-only on the device. */
+  uint64_t putvalue_slice_base;
 };
 
 /*
@@ -117,6 +128,29 @@ struct nccl_ofi_gin_gdaki_dev_handle {
   uint64_t scratch_local_addr;
   uint64_t *scratch_remote_addrs;
   uint32_t *scratch_remote_rkeys;
+
+  /* PutValue source slot pool, shared across the data endpoint and
+   * every signal/counter (sc) endpoint.
+   *
+   * Mirrors the plumbing in
+   * aws-ofi-nccl/include/rdma/gin/nccl_ofi_gin_gdaki_dev.h. EFA's
+   * RDMA_WRITE WQE cannot use inline data, so ncclGinApi_PutValue
+   * stages the user value through a registered source slot, then
+   * RDMA-writes the slot to the user destination. The arrival of that
+   * write at the receiver bumps the FI_REMOTE_WRITE counter on the
+   * chosen sc_endpoint, providing the signal as a side effect of the
+   * value transfer.
+   *
+   * Routing (matches Put):
+   *   signal != NONE  -> sc_endpoints[signalId]
+   *   signal == NONE  -> data endpoint
+   *
+   * Each participating endpoint owns a slice; the slice base lives
+   * on its dev_endpoint_handle (see putvalue_slice_base above). One
+   * MR covers the whole pool, so a single lkey + a single uniform
+   * slot stride live here. */
+  uint32_t putvalue_lkey;
+  uint32_t putvalue_slot_size;
 };
 
 /*
