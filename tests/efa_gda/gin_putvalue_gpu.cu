@@ -16,6 +16,15 @@
  *     waitSignal(0, least=1) to confirm and then verifies the
  *     destination memory also carries the new value.
  *
+ *   Phase 3 (aggregate-requests):
+ *     rank 0 -> rank 1 issues BURST=8 PutValues at offsets 0..7 with
+ *     ncclGinOptFlagsAggregateRequests on the first 7 and no flag on
+ *     the 8th. Only the 8th post should ring the SQ doorbell; the
+ *     earlier 7 stage WQEs and skip the MMIO write. rank 1 polls for
+ *     the 8th sentinel value at offset 7 (which forces all 7 deferred
+ *     WQEs to land first), then verifies offsets 0..6 match their
+ *     respective sentinels.
+ *
  * Run: mpirun -np 2 ./gin_putvalue_gpu
  * Env: NCCL_NET_PLUGIN=<path to libnccl-net-ofi.so>
  *      OFI_NCCL_GIN_GDAKI=1
@@ -40,6 +49,9 @@
 #define BUF_SIZE 64
 #define VAL_NO_SIGNAL 0x42424242
 #define VAL_WITH_SIGNAL 0x43434343
+/* Phase 3: BURST PutValues, sentinels stride from VAL_BURST_BASE. */
+#define BURST 8
+#define VAL_BURST_BASE 0x44440000
 #define WAIT_TIMEOUT_CYCLES 7500000000UL  /* ~5s on a 1.5GHz GPU */
 
 #define CUDACHECK(cmd) do {                                \
@@ -148,6 +160,100 @@ __global__ void wait_signal_kernel(
            (unsigned)seen, seen == expected ? "PASS" : "FAIL");
 }
 
+/* Phase 3 sender: BURST PutValues, deferring the doorbell on the first
+ * BURST-1 calls via ncclGinOptFlagsAggregateRequests. Only the last
+ * call rings the doorbell, so the firmware sees one MMIO write per
+ * burst (instead of BURST). */
+__global__ void putvalue_burst_aggregate_kernel(
+    ncclDevComm devComm, int ctxId,
+    ncclWindow_t dstWin, size_t dstOffBase,
+    int peer)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("SENDER[burst]: kernel entered, peer=%d burst=%d base_dstOff=%zu\n",
+           peer, BURST, (size_t)dstOffBase);
+
+  ncclGin gin{devComm, ctxId};
+  for (int i = 0; i < BURST; i++) {
+    int v = (int)(VAL_BURST_BASE + i);
+    /* Defer the SQ doorbell on every post except the last; the last
+     * post (no flag) rings everything that has been staged. */
+    uint32_t flags = (i < BURST - 1) ? (uint32_t)ncclGinOptFlagsAggregateRequests
+                                     : (uint32_t)ncclGinOptFlagsDefault;
+    gin.putValue<int>(ncclTeamWorld(devComm),
+                      peer,
+                      dstWin,
+                      dstOffBase + (size_t)i * sizeof(int),
+                      v,
+                      ncclGin_None{},
+                      ncclCoopThread{},
+                      ncclGin_None{},
+                      cuda::thread_scope_thread,
+                      cuda::thread_scope_device,
+                      flags);
+  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("SENDER[burst]: %d putValues posted (last with no flag)\n", BURST);
+  __threadfence_system();
+}
+
+/* Phase 3 receiver: poll until all BURST sentinels have landed, then
+ * verify each is in place at its respective offset.
+ *
+ * Deferring the doorbell coalesces the MMIO writes but does not impose
+ * delivery order: EFA SRD gives no ordering between work requests, so
+ * the final non-aggregate post (which rings the doorbell and releases
+ * every deferred WQE) can itself be delivered before some of the
+ * earlier deferred posts. The aggregate-requests contract is only that
+ * all posts land once the doorbell is rung — not that they arrive in
+ * order — so the receiver polls for every offset rather than keying off
+ * the last one. */
+__global__ void wait_burst_kernel(volatile int *dst_base, uint64_t timeout_cycles, int *result_out)
+{
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("RECEIVER[burst]: polling dst[0..%d] for all %d sentinels\n",
+           BURST - 1, BURST);
+
+  /* Wait until every offset carries its sentinel (or timeout). */
+  uint64_t start = clock64();
+  uint64_t iters = 0;
+  int remaining;
+  do {
+    __threadfence_system();
+    remaining = 0;
+    for (int i = 0; i < BURST; i++) {
+      if (dst_base[i] != (int)(VAL_BURST_BASE + i)) remaining++;
+    }
+    iters++;
+    if (clock64() - start > timeout_cycles) break;
+  } while (remaining != 0);
+
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("RECEIVER[burst]: %d/%d sentinels landed after %lu iters %s\n",
+           BURST - remaining, BURST, (unsigned long)iters,
+           remaining == 0 ? "(all seen)" : "(TIMEOUT)");
+
+  /* Verify all BURST sentinels are in place. */
+  __threadfence_system();
+  int errors = 0;
+  for (int i = 0; i < BURST; i++) {
+    int got = dst_base[i];
+    int want = (int)(VAL_BURST_BASE + i);
+    if (got != want) {
+      if (threadIdx.x == 0 && blockIdx.x == 0)
+        printf("RECEIVER[burst]: dst[%d]=0x%x expected=0x%x MISMATCH\n",
+               i, (unsigned)got, (unsigned)want);
+      errors++;
+    }
+  }
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    printf("RECEIVER[burst]: %d/%d sentinels match %s\n",
+           BURST - errors, BURST, errors == 0 ? "PASS" : "FAIL");
+
+  if (threadIdx.x == 0 && blockIdx.x == 0)
+    *result_out = errors;
+}
+
 int main(int argc, char **argv)
 {
   int rank, nranks;
@@ -249,6 +355,40 @@ int main(int argc, char **argv)
     CUDACHECK(cudaMemcpy(&seen, dst_gpu, sizeof(int), cudaMemcpyDeviceToHost));
     printf("R1: phase2 (signal) final dst=0x%x %s\n",
            (unsigned)seen, seen == VAL_WITH_SIGNAL ? "PASS" : "FAIL");
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  /* ============== Phase 3: aggregate-requests ============== */
+  /* Reset the receiver's first BURST*sizeof(int) bytes of dst so we can
+   * unambiguously detect arrival of each sentinel. */
+  if (rank == 1) {
+    CUDACHECK(cudaMemset(dst_gpu, 0, BURST * sizeof(int)));
+  }
+  MPI_Barrier(MPI_COMM_WORLD);
+
+  if (rank == 0) {
+    putvalue_burst_aggregate_kernel<<<1, 1, 0, stream>>>(
+        *devCommPtr, /*ctxId=*/0,
+        dstWin, /*dstOffBase=*/0,
+        /*peer=*/1);
+    CUDACHECK(cudaStreamSynchronize(stream));
+    printf("R0: phase3 (aggregate-requests) sender done\n");
+  } else {
+    int *errors_dev = nullptr;
+    CUDACHECK(cudaMalloc(&errors_dev, sizeof(int)));
+    CUDACHECK(cudaMemset(errors_dev, -1, sizeof(int)));
+    wait_burst_kernel<<<1, 1, 0, stream>>>(dst_gpu, WAIT_TIMEOUT_CYCLES, errors_dev);
+    CUDACHECK(cudaStreamSynchronize(stream));
+    int errors_host = -1;
+    CUDACHECK(cudaMemcpy(&errors_host, errors_dev, sizeof(int), cudaMemcpyDeviceToHost));
+    int seen[BURST] = {0};
+    CUDACHECK(cudaMemcpy(seen, dst_gpu, BURST * sizeof(int), cudaMemcpyDeviceToHost));
+    printf("R1: phase3 (aggregate-requests) errors=%d  values=[", errors_host);
+    for (int i = 0; i < BURST; i++) {
+      printf("0x%x%s", (unsigned)seen[i], i == BURST - 1 ? "" : ", ");
+    }
+    printf("] %s\n", errors_host == 0 ? "PASS" : "FAIL");
+    CUDACHECK(cudaFree(errors_dev));
   }
   MPI_Barrier(MPI_COMM_WORLD);
 

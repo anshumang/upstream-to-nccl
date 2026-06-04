@@ -70,7 +70,7 @@ template <ncclGinResourceSharingMode mode>
 NCCL_DEVICE_INLINE static void postRdmaWrite(
     nccl_ofi_gin_gdaki_dev_endpoint_handle *ep, int peer,
     uint64_t srcAddr, uint32_t srcLkey, uint32_t writeBytes,
-    uint64_t dstAddr, uint32_t dstRkey) {
+    uint64_t dstAddr, uint32_t dstRkey, uint32_t optFlags = ncclGinOptFlagsDefault) {
 
   efa_cuda_qp       *qp                  = (efa_cuda_qp *)ep->qp;
   uint16_t           ah                   = ep->address_handles[peer];
@@ -115,7 +115,15 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(
   group.sync();
 
   if (is_leader) {
-    efa_cuda_flush_sq_wrs<qpSharingMode<mode>>(qp, base, (uint32_t)batch_size);
+    /* Commit always; ring the doorbell unless the caller is
+     * aggregating. ncclGinOptFlagsAggregateRequests signals that more
+     * posts to this QP are coming and the application wants one MMIO
+     * doorbell per burst. The slots are still committed (pc advanced),
+     * so the next non-aggregate post on this QP — or an explicit
+     * ncclGinApi_Flush — rings *db = pc and releases the whole
+     * accumulated range at once. */
+    bool ring_db = !(optFlags & ncclGinOptFlagsAggregateRequests);
+    efa_cuda_flush_sq_wrs<qpSharingMode<mode>>(qp, base, (uint32_t)batch_size, ring_db);
     submittedCountAdd<mode>(const_cast<uint64_t*>(submitted_count_ptr), (uint64_t)batch_size);
   }
   group.sync();
@@ -204,12 +212,12 @@ NCCL_DEVICE_INLINE static void putImplMode(ncclGinCtx ctx, Coop coop, int peer, 
         ep = &dev->data;
       }
 
-      postRdmaWrite<mode>(ep, peer, absSrcAddr, srcLkey, writeBytes, absDstAddr, dstRkey);
+      postRdmaWrite<mode>(ep, peer, absSrcAddr, srcLkey, writeBytes, absDstAddr, dstRkey, optFlags);
     }
   }
   (void)signalOp; (void)signalOpArg;
   (void)hasDescriptor; (void)descriptor;
-  (void)required; (void)given; (void)optFlags;
+  (void)required; (void)given;
   coop.sync();
 }
 
@@ -247,7 +255,7 @@ template <ncclGinResourceSharingMode mode, typename T>
 NCCL_DEVICE_INLINE static void putValueImplMode(
     ncclGinCtx ctx, int peer, ncclGinWindow_t dstWin, size_t dstOff, T srcVal,
     ncclGinSignalDescriptor signal,
-    cuda::thread_scope required, cuda::thread_scope given) {
+    cuda::thread_scope required, cuda::thread_scope given, uint32_t optFlags) {
 
   nccl_ofi_gin_gdaki_dev_handle *dev = getDevHandle(ctx);
   nccl_ofi_gin_gdaki_mr_handle *dstMh = (nccl_ofi_gin_gdaki_mr_handle *)dstWin;
@@ -319,7 +327,11 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
   group.sync();
 
   if (is_leader) {
-    efa_cuda_flush_sq_wrs<qpSharingMode<mode>>(qp, base, (uint32_t)batch_size);
+    /* Commit always; ring the doorbell unless aggregating. See
+     * postRdmaWrite for the full rationale — the deferred slots are
+     * released by the next non-aggregate post on this QP or a Flush. */
+    bool ring_db = !(optFlags & ncclGinOptFlagsAggregateRequests);
+    efa_cuda_flush_sq_wrs<qpSharingMode<mode>>(qp, base, (uint32_t)batch_size, ring_db);
     submittedCountAdd<mode>(const_cast<uint64_t*>(submitted_count_ptr), (uint64_t)batch_size);
   }
   group.sync();
@@ -334,10 +346,19 @@ NCCL_DEVICE_INLINE static void flushImplMode(ncclGinCtx ctx, Coop coop, cuda::me
   if (coop.thread_rank() == 0) {
     nccl_ofi_gin_gdaki_dev_handle *dev = getDevHandle(ctx);
 
-    /* For each endpoint with outstanding work, snapshot submitted_count
-     * atomically, then spin on *local_cntr_value until the firmware
-     * has caught up. */
+    /* For each endpoint with outstanding work, ring any doorbell that
+     * a prior ncclGinOptFlagsAggregateRequests post left deferred, then
+     * snapshot submitted_count and spin on *local_cntr_value until the
+     * firmware has caught up.
+     *
+     * The doorbell ring is mandatory before the spin: a deferred
+     * aggregate post advanced submitted_count (so target reflects it)
+     * and committed the slots (pc advanced) but did NOT write *db = pc,
+     * so the NIC never saw the work. Without ringing here the spin
+     * would never converge. efa_cuda_ring_db writes *db = pc, which is
+     * a no-op when nothing was deferred (*db already equals pc). */
     auto wait_for_endpoint = [abortFlag](nccl_ofi_gin_gdaki_dev_endpoint_handle &ep) -> bool {
+      efa_cuda_ring_db((efa_cuda_qp *)ep.qp);
       uint64_t target = submittedCountLoad<mode>(&ep.submitted_count);
 
       while (*ep.local_cntr_value < target) {
@@ -452,17 +473,16 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_EFA_GDA> {
       switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
         case NCCL_GIN_RESOURCE_SHARING_CTA:
           nccl::gin::efa_gda::putValueImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(
-            ctx, peer, dstWin, dstOff, srcVal, signal, required, given);
+            ctx, peer, dstWin, dstOff, srcVal, signal, required, given, optFlags);
           break;
         default:
           nccl::gin::efa_gda::putValueImplMode<NCCL_GIN_RESOURCE_SHARING_GPU>(
-            ctx, peer, dstWin, dstOff, srcVal, signal, required, given);
+            ctx, peer, dstWin, dstOff, srcVal, signal, required, given, optFlags);
           break;
       }
     }
     (void)signalOp; (void)signalOpArg;
     (void)hasDescriptor; (void)descriptor;
-    (void)optFlags;
     coop.sync();
   }
 };

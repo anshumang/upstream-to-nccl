@@ -386,12 +386,22 @@ __device__ static inline void efa_cuda_atomic_store_u32(uint32_t *ptr, uint32_t 
 	cuda::atomic_ref<uint32_t, efa_qp_scope<mode>> r(*ptr);
 	r.store(val, cuda::memory_order_release);
 }
-/* Commit slots [base, base+count) and ring the doorbell once the
- * producer cursor reaches our range. Serializes doorbell ordering
- * in slot order without a held lock. Chunks into max_batch-sized
- * doorbells to respect the hardware limit. */
+/* Commit slots [base, base+count) and (optionally) ring the doorbell
+ * once the producer cursor reaches our range. Serializes doorbell
+ * ordering in slot order without a held lock. Chunks into
+ * max_batch-sized doorbells to respect the hardware limit.
+ *
+ * ring_db controls only the MMIO doorbell write. The wqes_completed
+ * and pc advances ALWAYS happen — they carry the cross-poster slot
+ * ordering contract, so skipping them would deadlock the next poster's
+ * flush. When ring_db is false the slots are committed (pc advanced)
+ * but the NIC is not yet told; a later flush on the same QP with
+ * ring_db=true (a non-aggregate post, or ncclGinApi_Flush) writes
+ * *db = pc and releases every slot accumulated since the last ring.
+ * This is how ncclGinOptFlagsAggregateRequests coalesces doorbells. */
 template <enum efa_qp_sharing_mode mode>
-__device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp, uint32_t base, uint32_t count)
+__device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp, uint32_t base, uint32_t count,
+						    bool ring_db = true)
 {
 	uint32_t offset = 0;
 	while (offset < count) {
@@ -406,11 +416,25 @@ __device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp, uint32_t ba
 
 		qp->sq.wq.pc = chunk_next;
 		__threadfence_system();
-		*qp->sq.wq.db = qp->sq.wq.pc;
-		__threadfence_system();
+		if (ring_db) {
+			*qp->sq.wq.db = qp->sq.wq.pc;
+			__threadfence_system();
+		}
 
 		offset += chunk;
 	}
+}
+
+/* Ring the doorbell for whatever the producer cursor has committed so
+ * far. Used to release WQEs that prior efa_cuda_flush_sq_wrs calls
+ * committed with ring_db=false (ncclGinOptFlagsAggregateRequests). A
+ * no-op-safe MMIO write: if nothing was deferred, *db already equals
+ * pc and the NIC sees no new work. */
+__device__ static inline void efa_cuda_ring_db(efa_cuda_qp *qp)
+{
+	__threadfence_system();
+	*qp->sq.wq.db = qp->sq.wq.pc;
+	__threadfence_system();
 }
 
 /* Reserve `count` contiguous SQ slots; returns the base absolute index.
