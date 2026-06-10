@@ -8,6 +8,7 @@
 #include <cstring>
 #include <errno.h>
 #include <stdint.h>
+#include <cuda/atomic>
 
 #include "../host/efa_cuda_dp.h"
 #include "../common/efa_io_defs.h"
@@ -339,39 +340,93 @@ __device__ static inline int efa_cuda_wr_set_sge(void *wr_buf, uint32_t lkey, ui
 	return 0;
 }
 
-__device__ static inline int efa_cuda_get_wqe_phase(efa_cuda_wq *wq, uint32_t index_in_batch)
+__device__ static inline int efa_cuda_get_wqe_phase(efa_cuda_wq *wq, uint32_t abs_idx)
 {
-	return wq->phase ^ (((wq->pc & wq->queue_mask) + index_in_batch) >> wq->queue_size_shift);
+	return (int)((abs_idx >> wq->queue_size_shift) & 1u);
 }
 
-__device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp)
+/* ==================================================================
+ * Lock-free SQ post
+ * ------------------------------------------------------------------
+ * Concurrent CTAs / threads can post to the same QP without a spin
+ * lock. Scoped on efa_qp_sharing_mode (CTA -> block-scope atomics,
+ * GPU -> device-scope atomics).
+ *
+ * Uses the wqes_posted field as the reservation index and the
+ * wqes_completed field as the ready/commit cursor.
+ * ================================================================== */
+
+enum efa_qp_sharing_mode {
+	EFA_QP_SHARING_MODE_CTA = 0,
+	EFA_QP_SHARING_MODE_GPU = 1,
+};
+
+template <enum efa_qp_sharing_mode mode>
+static constexpr cuda::thread_scope efa_qp_scope =
+	(mode == EFA_QP_SHARING_MODE_CTA)
+		? cuda::thread_scope_block : cuda::thread_scope_device;
+
+template <enum efa_qp_sharing_mode mode>
+__device__ static inline uint32_t efa_cuda_atomic_add_u32(uint32_t *ptr, uint32_t val)
 {
-	if (!qp->sq.wq.wqes_pending)
-		return;
-
-	qp->sq.wq.phase = efa_cuda_get_wqe_phase(&qp->sq.wq, qp->sq.wq.wqes_pending);
-	qp->sq.wq.pc += qp->sq.wq.wqes_pending;
-	qp->sq.wq.wqes_pending = 0;
-
-	__threadfence_system();
-	*qp->sq.wq.db = qp->sq.wq.pc;
-	__threadfence_system();
+	cuda::atomic_ref<uint32_t, efa_qp_scope<mode>> r(*ptr);
+	return r.fetch_add(val, cuda::memory_order_relaxed);
 }
 
-__device__ static inline int efa_cuda_start_sq_batch(efa_cuda_qp *qp, int batch_size)
+template <enum efa_qp_sharing_mode mode>
+__device__ static inline uint32_t efa_cuda_atomic_load_u32(uint32_t *ptr)
 {
-	// TODO: check free space
-
-	if (qp->sq.wq.wqes_pending + batch_size > qp->sq.wq.max_batch)
-		efa_cuda_flush_sq_wrs(qp);
-
-	qp->sq.wq.wqes_pending += batch_size;
-	return 0;
+	cuda::atomic_ref<uint32_t, efa_qp_scope<mode>> r(*ptr);
+	return r.load(cuda::memory_order_acquire);
 }
 
-__device__ static inline int efa_cuda_sq_batch_place_wr(efa_cuda_qp *qp, int index_in_batch, void *wr_buf)
+template <enum efa_qp_sharing_mode mode>
+__device__ static inline void efa_cuda_atomic_store_u32(uint32_t *ptr, uint32_t val)
 {
-	int wqe_phase = efa_cuda_get_wqe_phase(&qp->sq.wq, index_in_batch);
+	cuda::atomic_ref<uint32_t, efa_qp_scope<mode>> r(*ptr);
+	r.store(val, cuda::memory_order_release);
+}
+/* Commit slots [base, base+count) and ring the doorbell once the
+ * producer cursor reaches our range. Serializes doorbell ordering
+ * in slot order without a held lock. Chunks into max_batch-sized
+ * doorbells to respect the hardware limit. */
+template <enum efa_qp_sharing_mode mode>
+__device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp, uint32_t base, uint32_t count)
+{
+	uint32_t offset = 0;
+	while (offset < count) {
+		uint32_t chunk = min(count - offset, (uint32_t)qp->sq.wq.max_batch);
+		uint32_t chunk_base = base + offset;
+		uint32_t chunk_next = chunk_base + chunk;
+
+		__threadfence_system();
+
+		while (efa_cuda_atomic_load_u32<mode>(&qp->sq.wq.wqes_completed) != chunk_base) { /* spin */ }
+		efa_cuda_atomic_store_u32<mode>(&qp->sq.wq.wqes_completed, chunk_next);
+
+		qp->sq.wq.pc = chunk_next;
+		__threadfence_system();
+		*qp->sq.wq.db = qp->sq.wq.pc;
+		__threadfence_system();
+
+		offset += chunk;
+	}
+}
+
+/* Reserve `count` contiguous SQ slots; returns the base absolute index.
+ * Lock-free: each caller atomically advances wqes_posted. */
+template <enum efa_qp_sharing_mode mode>
+__device__ static inline uint32_t efa_cuda_start_sq_batch(efa_cuda_qp *qp, uint32_t batch_size)
+{
+	return efa_cuda_atomic_add_u32<mode>(&qp->sq.wq.wqes_posted, batch_size);
+}
+
+/* Write one WR into the ring at an absolute slot index. Phase is
+ * computed from the absolute index, so concurrent writers to
+ * different slots don't interfere. */
+__device__ static inline int efa_cuda_sq_batch_place_wr(efa_cuda_qp *qp, uint32_t abs_idx, void *wr_buf)
+{
+	int wqe_phase = efa_cuda_get_wqe_phase(&qp->sq.wq, abs_idx);
 	struct efa_io_tx_wqe *wqe = (struct efa_io_tx_wqe *)wr_buf;
 	uint32_t sq_desc_offset;
 	uint64_t *src;
@@ -380,7 +435,7 @@ __device__ static inline int efa_cuda_sq_batch_place_wr(efa_cuda_qp *qp, int ind
 	EFA_SET(&wqe->meta.ctrl2, EFA_IO_TX_META_DESC_PHASE, wqe_phase);
 
 	src = (uint64_t *)wqe;
-	sq_desc_offset = ((qp->sq.wq.pc + index_in_batch) & qp->sq.wq.queue_mask) * sizeof(struct efa_io_tx_wqe);
+	sq_desc_offset = (abs_idx & qp->sq.wq.queue_mask) * sizeof(struct efa_io_tx_wqe);
 	dst = (uint64_t *)(qp->sq.wq.buf + sq_desc_offset);
 	for (int i = 0 ; i < 8 ; i++)
 		dst[i] = src[i];
