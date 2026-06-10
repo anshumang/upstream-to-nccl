@@ -216,6 +216,54 @@ NCCL_DEVICE_INLINE static void putImpl(ncclGinCtx ctx, Coop coop, int peer, bool
   }
 }
 
+/* ── flushImplMode: mode-templated Flush implementation ───────────── */
+
+template <ncclGinResourceSharingMode mode, typename Coop>
+NCCL_DEVICE_INLINE static void flushImplMode(ncclGinCtx ctx, Coop coop, cuda::memory_order ord, uint32_t* abortFlag) {
+  (void)ord;
+  coop.sync();
+  if (coop.thread_rank() == 0) {
+    nccl_ofi_gin_gdaki_dev_handle *dev = getDevHandle(ctx);
+
+    /* For each endpoint with outstanding work, snapshot submitted_count
+     * atomically, then spin on *local_cntr_value until the firmware
+     * has caught up. */
+    auto wait_for_endpoint = [abortFlag](nccl_ofi_gin_gdaki_dev_endpoint_handle &ep) -> bool {
+      uint64_t target = submittedCountLoad<mode>(&ep.submitted_count);
+
+      while (*ep.local_cntr_value < target) {
+        if (abortFlag && *abortFlag) return false;
+      }
+      return true;
+    };
+
+    if (!wait_for_endpoint(dev->data)) return;
+
+    for (int i = 0; i < dev->nSignals; i++) {
+      if (!wait_for_endpoint(dev->signal_handles[i]->base)) return;
+    }
+
+    for (int i = 0; i < dev->nCounters; i++) {
+      if (!wait_for_endpoint(dev->counter_handles[i]->base)) return;
+    }
+  }
+  coop.sync();
+}
+
+/* ── flushImpl: runtime mode dispatcher ───────────────────────────── */
+
+template <typename Coop>
+NCCL_DEVICE_INLINE static void flushImpl(ncclGinCtx ctx, Coop coop, cuda::memory_order ord, uint32_t* abortFlag) {
+  switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+    case NCCL_GIN_RESOURCE_SHARING_CTA:
+      flushImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, ord, abortFlag);
+      break;
+    default:
+      flushImplMode<NCCL_GIN_RESOURCE_SHARING_GPU>(ctx, coop, ord, abortFlag);
+      break;
+  }
+}
+
 } // namespace efa_gda
 } // namespace gin
 } // namespace nccl
@@ -308,10 +356,7 @@ template <>
 struct ncclGinApi_Flush<NCCL_NET_DEVICE_GIN_EFA_GDA> {
   template <typename Coop>
   NCCL_DEVICE_INLINE static void call(ncclGinCtx ctx, Coop coop, cuda::memory_order ord, uint32_t* abortFlag) {
-    coop.sync();
-    /* TODO: implement Flush */
-    (void)ctx; (void)ord; (void)abortFlag;
-    coop.sync();
+    nccl::gin::efa_gda::flushImpl(ctx, coop, ord, abortFlag);
   }
 };
 
