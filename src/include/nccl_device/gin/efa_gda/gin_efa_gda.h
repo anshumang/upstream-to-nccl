@@ -177,8 +177,15 @@ NCCL_DEVICE_INLINE static void putImplMode(ncclGinCtx ctx, Coop coop, int peer, 
       uint32_t srcLkey;
       uint32_t writeBytes;
       if (hasPayload) {
-        nccl_ofi_gin_gdaki_mr_handle *dstMh = (nccl_ofi_gin_gdaki_mr_handle *)dstWin;
-        nccl_ofi_gin_gdaki_mr_handle *srcMh = (nccl_ofi_gin_gdaki_mr_handle *)srcWin;
+        /* Resolve the memory window to the rail this context is bound
+         * to. The window is an array of per-rail mr_handle pointers;
+         * dev->rail_id (= contextId % num_rails, pre-baked by the
+         * plugin) selects this context's rail, keeping the path
+         * rail-agnostic. */
+        nccl_ofi_gin_gdaki_mr_handle *dstMh =
+          ((nccl_ofi_gin_gdaki_mr_handle **)dstWin)[dev->rail_id];
+        nccl_ofi_gin_gdaki_mr_handle *srcMh =
+          ((nccl_ofi_gin_gdaki_mr_handle **)srcWin)[dev->rail_id];
         absSrcAddr = srcMh->local_addr + srcOff;
         absDstAddr = dstMh->peers[peer].remote_addr + dstOff;
         dstRkey    = dstMh->peers[peer].rkey;
@@ -258,7 +265,10 @@ NCCL_DEVICE_INLINE static void putValueImplMode(
     cuda::thread_scope required, cuda::thread_scope given, uint32_t optFlags) {
 
   nccl_ofi_gin_gdaki_dev_handle *dev = getDevHandle(ctx);
-  nccl_ofi_gin_gdaki_mr_handle *dstMh = (nccl_ofi_gin_gdaki_mr_handle *)dstWin;
+  /* Resolve the window to this context's rail (see Put): the window is
+   * an array of per-rail mr_handle pointers, indexed by dev->rail_id. */
+  nccl_ofi_gin_gdaki_mr_handle *dstMh =
+    ((nccl_ofi_gin_gdaki_mr_handle **)dstWin)[dev->rail_id];
 
   /* Pick endpoint, mirroring Put: a signal request routes to
    * signal_handles[] so the write's arrival ticks the receiver's
