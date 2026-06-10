@@ -18,6 +18,7 @@
 
 #include <cstdint>
 #include <cuda/atomic>
+#include <cooperative_groups.h>
 
 #include "../gin_device_common.h"
 #include "gin_efa_gda_dev.h"
@@ -84,16 +85,40 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(
   efa_cuda_wr_set_sge(&wr, srcLkey, srcAddr, writeBytes);
   efa_cuda_wr_set_remote(&wr, ah, (uint32_t)qpn, qkey);
 
-  /* Lock-free per-thread post. */
-  while (true) {
-    uint64_t in_flight = *submitted_count_ptr - *local_cntr_ptr;
-    if (in_flight + 1ull <= (uint64_t)sq_size_val) break;
-  }
+  /* Lock-free post with coalesced-group doorbell coalescing.
+   *
+   * Threads concurrently posting to the same QP form a group:
+   * coalesced_threads() captures the converged threads and
+   * labeled_partition splits them by target QP. The group leader
+   * reserves a contiguous slot range for the whole group, every
+   * member writes its WR in parallel, and the leader rings a single
+   * doorbell for the batch. The group handle stays coherent across
+   * the shfl and sync calls under independent thread scheduling. */
+  cooperative_groups::coalesced_group active = cooperative_groups::coalesced_threads();
+  auto group = cooperative_groups::labeled_partition(active, (unsigned long long)(uintptr_t)qp);
 
-  uint32_t slot = efa_cuda_start_sq_batch<qpSharingMode<mode>>(qp, 1u);
-  efa_cuda_sq_batch_place_wr(qp, slot, &wr);
-  efa_cuda_flush_sq_wrs<qpSharingMode<mode>>(qp, slot, 1u);
-  submittedCountAdd<mode>(const_cast<uint64_t*>(submitted_count_ptr), 1ull);
+  int  my_idx     = group.thread_rank();
+  int  batch_size = group.num_threads();
+  bool is_leader  = (my_idx == 0);
+
+  uint32_t base = 0;
+  if (is_leader) {
+    while (true) {
+      uint64_t in_flight = *submitted_count_ptr - *local_cntr_ptr;
+      if (in_flight + (uint64_t)batch_size <= (uint64_t)sq_size_val) break;
+    }
+    base = efa_cuda_start_sq_batch<qpSharingMode<mode>>(qp, (uint32_t)batch_size);
+  }
+  base = group.shfl(base, 0);
+
+  efa_cuda_sq_batch_place_wr(qp, base + (uint32_t)my_idx, &wr);
+  group.sync();
+
+  if (is_leader) {
+    efa_cuda_flush_sq_wrs<qpSharingMode<mode>>(qp, base, (uint32_t)batch_size);
+    submittedCountAdd<mode>(const_cast<uint64_t*>(submitted_count_ptr), (uint64_t)batch_size);
+  }
+  group.sync();
 }
 
 /* ── putImplMode: mode-templated Put implementation ─────────────── */
