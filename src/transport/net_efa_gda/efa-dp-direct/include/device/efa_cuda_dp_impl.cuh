@@ -419,6 +419,9 @@ __device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp, uint32_t ba
 		if (ring_db) {
 			*qp->sq.wq.db = qp->sq.wq.pc;
 			__threadfence_system();
+			qp->sq.wq.db_pending = 0;
+		} else {
+			qp->sq.wq.db_pending = 1;
 		}
 
 		offset += chunk;
@@ -432,9 +435,16 @@ __device__ static inline void efa_cuda_flush_sq_wrs(efa_cuda_qp *qp, uint32_t ba
  * pc and the NIC sees no new work. */
 __device__ static inline void efa_cuda_ring_db(efa_cuda_qp *qp)
 {
-	__threadfence_system();
-	*qp->sq.wq.db = qp->sq.wq.pc;
-	__threadfence_system();
+	/* Only ring if a prior flush committed pc with ring_db=false
+	 * (ncclGinOptFlagsAggregateRequests). An unconditional doorbell
+	 * re-ring on an endpoint with no deferred work desyncs the
+	 * lock-free SQ and hangs the collective. */
+	if (qp->sq.wq.db_pending) {
+		__threadfence_system();
+		*qp->sq.wq.db = qp->sq.wq.pc;
+		__threadfence_system();
+		qp->sq.wq.db_pending = 0;
+	}
 }
 
 /* Reserve `count` contiguous SQ slots; returns the base absolute index.
