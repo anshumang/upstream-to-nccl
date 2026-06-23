@@ -83,62 +83,66 @@ NCCL_DEVICE_INLINE static uint64_t hwCounterLoad(uint64_t *ptr) {
   return scopedAtomicLoad<cuda::thread_scope_system, cuda::memory_order_acquire>(ptr);
 }
 
-/* ── postRdmaWrite: shared post path for Put and PutValue ─────────── */
+/* Store to a NIC-written hardware counter from GPU memory. Used by
+ * ResetSignal / ResetCounter to zero the counter from the GPU side;
+ * system-scope release so any prior GPU writes are visible to the NIC
+ * before it observes the new counter value. */
+NCCL_DEVICE_INLINE static void hwCounterStore(uint64_t *ptr, uint64_t val) {
+  scopedAtomicStore<cuda::thread_scope_system, cuda::memory_order_release>(ptr, val);
+}
 
-/* Posts an RDMA write on `ep`'s local QP (its FI_WRITE counter tracks
+/* ── postRdmaWrite: shared post path for Put and PutValue ─────────────
+ *
+ * Posts an RDMA write on `ep`'s local QP (its FI_WRITE counter tracks
  * local completion) to the remote QP given by the explicit
  * (ah, qpn, qkey) tuple. The local poster QP and the remote target QP
  * are chosen independently by the caller: counterId selects the local
  * poster (this `ep`), signalId selects the remote tuple (via the
- * poster's sig_* table). For non-signalling writes the caller passes
- * `ep`'s own per-peer addressing. */
+ * poster's sig_* table); a counter-only write targets the peer's data EP
+ * via cnt_*. For non-signalling/non-counter writes the caller passes
+ * `ep`'s own per-peer addressing tuple.
+ *
+ * Inlined sliding-window SQ post with warp coalescing: drives the
+ * efa_cuda_qp ring directly via two shared cursors rather than a per-QP
+ * spinlock + the efa-dp-direct start_sq_batch / flush_sq_wrs helpers.
+ *
+ *   qp->sq.wq.pc             : monotonic reservation index. A group's
+ *                              leader claims its whole range with one
+ *                              atomicAdd(+group_size).
+ *   qp->sq.wq.wqes_completed : "released" cursor — the doorbell has been
+ *                              rung up to here. Doubles as the
+ *                              sliding-window base and the doorbell-order
+ *                              rendezvous token across groups, serializing
+ *                              concurrent posters in slot order WITHOUT a
+ *                              held lock.
+ *
+ * Threads concurrently posting to the same QP form a group
+ * (coalesced_threads + labeled_partition by qp), chunked into windows of
+ * <= max_batch (the EFA staging limit). Per chunk the leader applies
+ * sliding-window + SQ ring-overflow backpressure; members write their own
+ * WQEs in parallel; the leader rings one doorbell for the chunk in slot
+ * order and hands off to the next group.
+ *
+ * PutValue staging (pvSrcVal != nullptr): EFA RDMA_WRITE cannot carry
+ * inline data, so for PutValue each lane first stages its value into its
+ * own slot of the endpoint's putvalue pool (slice base ep->putvalue_slice_base,
+ * slot index = reserved SQ slot % sq_size) and the WR's SGE points at that
+ * slot. Put (pvSrcVal == nullptr) uses the caller's fixed srcAddr/srcLkey.
+ * pvSrcVal/pvValBytes are read per lane; the same value goes to every
+ * lane's slot (each call posts one WR per calling thread). */
 template <ncclGinResourceSharingMode mode>
 NCCL_DEVICE_INLINE static void postRdmaWrite(
     nccl_ofi_gin_gdaki_dev_endpoint_handle *ep, uint16_t ah, uint16_t qpn,
     uint32_t qkey, uint64_t srcAddr, uint32_t srcLkey, uint32_t writeBytes,
-    uint64_t dstAddr, uint32_t dstRkey) {
+    uint64_t dstAddr, uint32_t dstRkey,
+    const void *pvSrcVal = nullptr, uint32_t pvValBytes = 0,
+    uint32_t pvLkey = 0, uint64_t pvSliceBase = 0, uint32_t pvSlotSize = 0) {
 
   efa_cuda_qp       *qp                  = (efa_cuda_qp *)ep->qp;
   uint64_t          *submitted_count_ptr  = &ep->submitted_count;
   uint64_t          *local_cntr_ptr       = ep->local_cntr_value;
   uint32_t           sq_size_val          = ep->sq_size;
 
-  efa_io_tx_wqe wr;
-  efa_cuda_init_rdma_write_wr(&wr, (uint16_t)threadIdx.x, dstRkey, dstAddr);
-  efa_cuda_wr_set_sge(&wr, srcLkey, srcAddr, writeBytes);
-  efa_cuda_wr_set_remote(&wr, ah, (uint32_t)qpn, qkey);
-
-  /* Sliding-window SQ post with warp coalescing (Stage 2).
-   *
-   * Inlines the reserve / write / doorbell sequence directly against
-   * the efa_cuda_qp ring (uses only the WQE *builders* above, not the
-   * efa-dp-direct start_sq_batch / sq_batch_place_wr / flush_sq_wrs
-   * helpers). Two shared cursors in the QP coordinate all posters
-   * (across lanes, warps and CTAs):
-   *
-   *   pc             : monotonic reservation index. A group's leader
-   *                    claims its whole range with one atomicAdd(+g).
-   *   wqes_completed : "released" cursor — the doorbell has been rung
-   *                    up to here. Doubles as the sliding-window base
-   *                    and the doorbell-order rendezvous token.
-   *
-   * Coalescing: lanes of a warp targeting the same QP form a group via
-   * coalesced_threads() + labeled_partition(qp). The leader reserves g
-   * = group.num_threads() contiguous slots; every member writes its own
-   * WQE in parallel; the leader rings one doorbell for the batch.
-   *
-   * max_batch bound: a group may be larger than the EFA staging limit
-   * (a warp can have up to 32 lanes on one QP), so the group is chunked
-   * into windows of <= max_batch. For each chunk:
-   *   - window-wait (leader): write only once the chunk fits within the
-   *     released window [released, released + max_batch). This bounds
-   *     un-doorbelled WQEs across ALL concurrent groups to max_batch.
-   *   - SQ ring-overflow wait (leader): the chunk's high-water slot must
-   *     be within sq_size of the NIC consumer (FI_WRITE counter).
-   *   - members write their WQEs in parallel.
-   *   - doorbell rendezvous (leader): wait until released == chunk_base
-   *     (strict slot order across groups), ring the doorbell, then
-   *     advance released to hand off to the next group. */
   cooperative_groups::coalesced_group active = cooperative_groups::coalesced_threads();
   auto group = cooperative_groups::labeled_partition(active, (unsigned long long)(uintptr_t)qp);
 
@@ -150,7 +154,8 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(
   cuda::atomic_ref<uint32_t, ncclGinScope<mode>> pc_ref(qp->sq.wq.pc);
   cuda::atomic_ref<uint32_t, ncclGinScope<mode>> base_ref(qp->sq.wq.wqes_completed);
 
-  /* Leader reserves the whole group's contiguous slot range. */
+  /* Leader reserves the whole group's contiguous slot range with one
+   * atomicAdd; this is the linearization point across all groups. */
   uint32_t base = 0;
   if (is_leader) {
     base = pc_ref.fetch_add((uint32_t)group_size, cuda::memory_order_relaxed);
@@ -164,8 +169,8 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(
     uint32_t chunk_next = chunk_base + (uint32_t)chunk_size;
 
     if (is_leader) {
-      /* Sliding-window backpressure: keep cumulative un-doorbelled
-       * WQEs (across all groups) within max_batch. */
+      /* Sliding-window backpressure: keep cumulative un-doorbelled WQEs
+       * (across all groups) within max_batch. */
       while (chunk_next > base_ref.load(cuda::memory_order_acquire) + max_batch) {
         /* spin */
       }
@@ -186,26 +191,61 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(
     group.sync();   /* members wait for leader's backpressure before writing */
 
     /* Members in this window write their own WQE into their slot. */
-    if (my_idx >= chunk_start && my_idx < chunk_start + chunk_size) {
+    bool in_window = (my_idx >= chunk_start && my_idx < chunk_start + chunk_size);
+    if (in_window) {
       uint32_t my_slot = chunk_base + (uint32_t)(my_idx - chunk_start);
-      uint32_t sq_idx  = my_slot & qp->sq.wq.queue_mask;
-      int wqe_phase    = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
+
+      /* WQE wr_id -> wqe.meta.req_id (completion-descriptor tag). Use the
+       * reserved absolute SQ slot index, not threadIdx.x: the slot is
+       * unique per outstanding WQE on this QP, whereas threadIdx.x is
+       * neither unique across a coalesced group nor stable and would
+       * alias/truncate into the uint16_t req_id. */
+      uint64_t wrSrcAddr = srcAddr;
+      uint32_t wrSrcLkey = srcLkey;
+      if (pvSrcVal != nullptr) {
+        /* PutValue: stage the value into this slot's slot of the pool, then
+         * point the SGE at it. slot folds 1:1 onto a pool slot (slice holds
+         * sq_size slots; sq_size is a power of two so % is a mask). */
+        uint64_t slot_idx   = (uint64_t)my_slot % (uint64_t)sq_size_val;
+        uint64_t local_addr = pvSliceBase + slot_idx * (uint64_t)pvSlotSize;
+        for (uint32_t b = 0; b < pvValBytes; b++)
+          ((uint8_t *)local_addr)[b] = ((const uint8_t *)pvSrcVal)[b];
+        wrSrcAddr  = local_addr;
+        wrSrcLkey  = pvLkey;
+      }
+
+      efa_io_tx_wqe wr;
+      efa_cuda_init_rdma_write_wr(&wr, (uint16_t)my_slot, dstRkey, dstAddr);
+      efa_cuda_wr_set_sge(&wr, wrSrcLkey, wrSrcAddr, writeBytes);
+      efa_cuda_wr_set_remote(&wr, ah, (uint32_t)qpn, qkey);
+
+      uint32_t sq_idx    = my_slot & qp->sq.wq.queue_mask;
+      int      wqe_phase = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
       EFA_SET(&wr.meta.ctrl2, EFA_IO_TX_META_DESC_PHASE, wqe_phase);
       uint64_t *src = (uint64_t *)&wr;
       uint64_t *dst = (uint64_t *)(qp->sq.wq.buf + sq_idx * sizeof(efa_io_tx_wqe));
       for (int i = 0; i < 8; i++)
         dst[i] = src[i];
     }
-    group.sync();   /* all members' WQE writes for this chunk are done */
+    group.sync();   /* all members' WQE (+ PutValue staging) stores done */
+
+    /* Each writing lane publishes ITS OWN WQE + staging stores to system
+     * scope. A single leader-only __threadfence_system() does NOT order
+     * other lanes' stores ahead of the doorbell — threadfence only orders
+     * the calling thread's accesses — so every writer must fence its own
+     * writes here. */
+    if (in_window) {
+      __threadfence_system();
+    }
+    group.sync();   /* all per-lane publishes retired before the doorbell */
 
     if (is_leader) {
-      __threadfence_system();   /* publish all chunk WQE writes before the doorbell */
       /* Doorbell-order rendezvous: ring in slot order across groups. */
       while (base_ref.load(cuda::memory_order_acquire) != chunk_base) {
         /* spin */
       }
       *qp->sq.wq.db = chunk_next;
-      __threadfence_system();   /* drain/order the doorbell write */
+      __threadfence_system();   /* order the doorbell MMIO write itself */
       scopedAtomicAdd<ncclGinScope<mode>, cuda::memory_order_relaxed>(submitted_count_ptr, (uint64_t)chunk_size);
       base_ref.store(chunk_next, cuda::memory_order_release);   /* hand off to next group */
     }
@@ -430,6 +470,72 @@ NCCL_DEVICE_INLINE static void putImpl(ncclGinCtx ctx, Coop coop, int peer, bool
   }
 }
 
+/* ── putValueImplMode: mode-templated PutValue implementation ─────── */
+
+template <ncclGinResourceSharingMode mode, typename T>
+NCCL_DEVICE_INLINE static void putValueImplMode(
+    ncclGinCtx ctx, int peer, ncclGinWindow_t dstWin, size_t dstOff, T srcVal,
+    ncclGinSignalDescriptor signal,
+    cuda::thread_scope required, cuda::thread_scope given) {
+
+  nccl_ofi_gin_gdaki_dev_handle *dev = getDevHandle(ctx);
+  nccl_ofi_gin_gdaki_mr_handle *dstMh = (nccl_ofi_gin_gdaki_mr_handle *)dstWin;
+
+  /* Pick the local poster endpoint, mirroring Put: a signal request
+   * routes to signal_handles[] (its FI_WRITE counter tracks local
+   * completion); otherwise the data endpoint. */
+  nccl_ofi_gin_gdaki_dev_endpoint_handle *ep;
+  if (signal.type == NCCL_GIN_SIGNAL_TYPE_INDEXED) {
+    ep = &dev->signal_handles[signal.indexedSignal.signalId]->base;
+  } else {
+    ep = &dev->data;
+  }
+
+  /* Resolve the remote target (ah, qpn, qkey), mirroring Put. A signal
+   * request selects the target QP via the poster's signalId-major sig_*
+   * table (idx = signalId * nranks + peer) so the write's arrival ticks
+   * the receiver's FI_REMOTE_WRITE counter for that signalId; otherwise
+   * the poster's own per-peer table addresses peer's same-index endpoint
+   * (the data endpoint resolves to peer's data endpoint). */
+  uint16_t ah;
+  uint16_t qpn;
+  uint32_t qkey;
+  if (signal.type == NCCL_GIN_SIGNAL_TYPE_INDEXED) {
+    uint32_t sigIdx =
+        (uint32_t)signal.indexedSignal.signalId * (uint32_t)dev->nranks
+        + (uint32_t)peer;
+    ah   = ep->sig_address_handles[sigIdx];
+    qpn  = ep->sig_remote_qpns[sigIdx];
+    qkey = ep->sig_qkey[sigIdx];
+  } else {
+    ah   = ep->address_handles[peer];
+    qpn  = ep->remote_qpns[peer];
+    qkey = ep->qkey[peer];
+  }
+
+  uint64_t absDstAddr = dstMh->peers[peer].remote_addr + dstOff;
+  uint32_t dstRkey    = dstMh->peers[peer].rkey;
+
+  /* PutValue reuses postRdmaWrite. EFA RDMA_WRITE can't carry inline data,
+   * so postRdmaWrite's PutValue-staging path (pvSrcVal != nullptr) stages
+   * srcVal into each lane's slot of the endpoint's putvalue pool and points
+   * the WR's SGE there; the reserved SQ slot folds 1:1 onto a pool slot, so
+   * concurrent posters never collide and a slot is only reused once its
+   * prior WQE has retired (gated by postRdmaWrite's SQ-overflow check). The
+   * pool's source length is the value size; the destination write length is
+   * also sizeof(T). */
+  (void)required; (void)given;   /* NIC reads the staged slot at system
+                                  * scope; postRdmaWrite fences every writer
+                                  * before the doorbell, so the caller's
+                                  * release-scope hint is not needed here. */
+  postRdmaWrite<mode>(ep, ah, qpn, qkey, /*srcAddr=*/0, /*srcLkey=*/0,
+                      /*writeBytes=*/(uint32_t)sizeof(T), absDstAddr, dstRkey,
+                      /*pvSrcVal=*/&srcVal, /*pvValBytes=*/(uint32_t)sizeof(T),
+                      /*pvLkey=*/dev->putvalue_lkey,
+                      /*pvSliceBase=*/ep->putvalue_slice_base,
+                      /*pvSlotSize=*/dev->putvalue_slot_size);
+}
+
 /* ── flushImplMode: mode-templated Flush implementation ───────────── */
 
 template <ncclGinResourceSharingMode mode, typename Coop>
@@ -527,13 +633,59 @@ struct ncclGinApi_PutValue<NCCL_NET_DEVICE_GIN_EFA_GDA> {
                                       ncclGinDescriptorSmem* descriptor,
                                       cuda::thread_scope required, cuda::thread_scope given,
                                       uint32_t optFlags = ncclGinOptFlagsDefault) {
+    /* EFA RDMA_WRITE doesn't support inline data (efa-dp-direct's
+     * wr_set_inline_data only supports SEND opcode). Stage srcVal into
+     * a registered local source slot, then post an RDMA_WRITE from the
+     * slot to the user's destination.
+     *
+     * Routing matches Put: when the caller asks for a signal, the WQE
+     * goes on signal_handles[signalId]'s sc_endpoint so the arrival of
+     * the write at the receiver bumps that endpoint's FI_REMOTE_WRITE
+     * counter — i.e. value-and-signal in one WQE. When there is no
+     * signal the WQE goes on the data endpoint.
+     *
+     * Slot pool is shared across the data endpoint and every sc
+     * endpoint. Each endpoint owns its slice; the slice base lives
+     * on the endpoint handle itself (ep.putvalue_slice_base). Slice
+     * size is implied by ep.sq_size. Slot reuse safety: each in-flight
+     * WQE on endpoint E owns slot (E.submitted_count % E.sq_size)
+     * inside E's slice; the per-endpoint SQ-overflow backpressure
+     * check on E's FI_WRITE counter gates new posts until the NIC
+     * has drained the old WR before the slot is reused.
+     *
+     * EFA backend signal contract (matches Put):
+     *   - INDEXED signals only.
+     *   - Inc-by-1 only (FI_REMOTE_WRITE ticks once per inbound write);
+     *     signalOpArg is ignored. */
     coop.sync();
-    /* TODO: efa-dp-direct wr_set_inline_data only supports SEND opcode,
-       not RDMA_WRITE. Need either an efa-dp-direct update or a
-       pre-registered scratch buffer approach. */
-    (void)ctx; (void)peer; (void)dstWin; (void)dstOff; (void)srcVal;
-    (void)signal; (void)signalOp; (void)signalOpArg; (void)hasDescriptor;
-    (void)descriptor; (void)required; (void)given; (void)optFlags;
+    static_assert(sizeof(T) <= 8, "PutValue: T must fit in 8 bytes");
+
+    /* Only INDEXED + Inc-by-1 are supported on this backend. */
+    assert(signal.type == NCCL_GIN_SIGNAL_TYPE_NONE
+        || signal.type == NCCL_GIN_SIGNAL_TYPE_INDEXED);
+    assert(signal.type == NCCL_GIN_SIGNAL_TYPE_NONE
+        || signalOp == ncclGinSignalInc
+        || signalOpArg == 1);
+
+    /* One WQE per calling thread, posted lock-free with the same
+     * coalesced-group doorbell coalescing as Put. The mode-templated
+     * body uses block- vs device-scope atomics per the context's
+     * resource-sharing mode. */
+    if (coop.thread_rank() == 0) {
+      switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+        case NCCL_GIN_RESOURCE_SHARING_CTA:
+          nccl::gin::efa_gda::putValueImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(
+            ctx, peer, dstWin, dstOff, srcVal, signal, required, given);
+          break;
+        default:
+          nccl::gin::efa_gda::putValueImplMode<NCCL_GIN_RESOURCE_SHARING_GPU>(
+            ctx, peer, dstWin, dstOff, srcVal, signal, required, given);
+          break;
+      }
+    }
+    (void)signalOp; (void)signalOpArg;
+    (void)hasDescriptor; (void)descriptor;
+    (void)optFlags;
     coop.sync();
   }
 };
