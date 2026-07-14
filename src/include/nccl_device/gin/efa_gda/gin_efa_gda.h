@@ -807,8 +807,8 @@ template <>
 struct ncclGinApi_GetSignalPtr<NCCL_NET_DEVICE_GIN_EFA_GDA> {
   NCCL_DEVICE_INLINE static ncclGinOffsetPtr call(ncclGinCtx ctx, ncclGinSignal_t signalId) {
     nccl_ofi_gin_gdaki_dev_handle* dev = nccl::gin::efa_gda::getDevHandle(ctx);
-    nccl_ofi_gin_gdaki_dev_counter_handle* h = dev->signal_handles[signalId];
-    return {(uint64_t*)h->cntr_value, h->cntr_offset};
+    nccl_ofi_gin_gdaki_dev_signal_handle* h = dev->signal_handles[signalId];
+    return {(uint64_t*)h->remote_write_value, h->cntr_offset};
   }
 };
 
@@ -819,7 +819,7 @@ struct ncclGinApi_GetCounterPtr<NCCL_NET_DEVICE_GIN_EFA_GDA> {
   NCCL_DEVICE_INLINE static ncclGinOffsetPtr call(ncclGinCtx ctx, ncclGinCounter_t counterId) {
     nccl_ofi_gin_gdaki_dev_handle* dev = nccl::gin::efa_gda::getDevHandle(ctx);
     nccl_ofi_gin_gdaki_dev_counter_handle* h = dev->counter_handles[counterId];
-    return {(uint64_t*)h->cntr_value, h->cntr_offset};
+    return {(uint64_t*)h->base.local_cntr_value, h->cntr_offset};
   }
 };
 
@@ -834,8 +834,8 @@ struct ncclGinApi_ResetSignal<NCCL_NET_DEVICE_GIN_EFA_GDA> {
     /* Offset-based reset: the NIC counter cannot be written, so snapshot
      * its current value into cntr_offset. Subsequent reads/waits subtract
      * the offset, making the signal appear reset. */
-    nccl_ofi_gin_gdaki_dev_counter_handle* h = dev->signal_handles[signal.indexedSignal.signalId];
-    h->cntr_offset = nccl::gin::efa_gda::hwCounterLoad((uint64_t*)h->cntr_value);
+    nccl_ofi_gin_gdaki_dev_signal_handle* h = dev->signal_handles[signal.indexedSignal.signalId];
+    h->cntr_offset = nccl::gin::efa_gda::hwCounterLoad((uint64_t*)h->remote_write_value);
   }
 };
 
@@ -849,7 +849,7 @@ struct ncclGinApi_ResetCounter<NCCL_NET_DEVICE_GIN_EFA_GDA> {
     /* Offset-based reset: snapshot the NIC counter into cntr_offset
      * instead of writing the (NIC-owned) counter. */
     nccl_ofi_gin_gdaki_dev_counter_handle* h = dev->counter_handles[counterId];
-    h->cntr_offset = nccl::gin::efa_gda::hwCounterLoad((uint64_t*)h->cntr_value);
+    h->cntr_offset = nccl::gin::efa_gda::hwCounterLoad((uint64_t*)h->base.local_cntr_value);
   }
 };
 

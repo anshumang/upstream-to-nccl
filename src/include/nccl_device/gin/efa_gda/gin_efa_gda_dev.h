@@ -88,28 +88,41 @@ struct nccl_ofi_gin_gdaki_dev_endpoint_handle {
 };
 
 /*
- * Per-signal/counter endpoint handle, returned to device code through
- * dev_handle->signal_handles[] and dev_handle->counter_handles[].
+ * Per-counter endpoint handle, returned to device code through
+ * dev_handle->counter_handles[].
  *
- * Composes nccl_ofi_gin_gdaki_dev_endpoint_handle (qp / cq / addressing /
- * sq_lock / counter completion tracking) and adds the cntr_value
- * pointer that the kernel reads to observe signal arrivals
- * (FI_REMOTE_WRITE) or counter increments (FI_WRITE).
+ * A counter endpoint's one FI_WRITE counter serves both roles: the raw
+ * base.local_cntr_value is read by backpressure / Flush, and the same
+ * counter (offset-adjusted) is the app-facing GetCounter / ResetCounter
+ * value. There is deliberately no separate pointer — the two views read
+ * the same field, so they cannot disagree.
  */
 struct nccl_ofi_gin_gdaki_dev_counter_handle {
-  /* Endpoint-common fields (qp, cq, addressing, sq_lock,
-   * counter completion tracking). */
+  /* Endpoint-common fields; base.local_cntr_value IS the FI_WRITE counter. */
   struct nccl_ofi_gin_gdaki_dev_endpoint_handle base;
-  /* NIC writes the hardware counter value here (GPU memory). Read
-   * via system-scope atomic load (hwCounterLoad / waitSignal). */
-  uint64_t* cntr_value;
 
-  /* Reset baseline for offset-based (reset-without-zeroing) semantics.
-   * The NIC counter cannot be written by software, so ResetSignal /
-   * ResetCounter snapshot cntr_value into cntr_offset instead of zeroing
-   * the counter; reads/waits subtract cntr_offset. Initialized to 0 by
-   * the plugin at populate() time. Must stay in sync with the plugin
-   * definition in nccl_ofi_gin_gdaki_dev.h. */
+  /* Reset baseline for offset-based reset; app-facing reads only. */
+  uint64_t cntr_offset;
+};
+
+/*
+ * Per-signal endpoint handle, returned to device code through
+ * dev_handle->signal_handles[].
+ *
+ * Carries two distinct hardware counters: base.local_cntr_value is the
+ * FI_WRITE counter (raw, for backpressure / Flush) and remote_write_value
+ * is the FI_REMOTE_WRITE counter (offset-adjusted, the app-facing signal
+ * waitSignal observes). Must stay in sync with the plugin definition in
+ * nccl_ofi_gin_gdaki_dev.h.
+ */
+struct nccl_ofi_gin_gdaki_dev_signal_handle {
+  /* Endpoint-common fields; base.local_cntr_value IS the FI_WRITE counter. */
+  struct nccl_ofi_gin_gdaki_dev_endpoint_handle base;
+
+  /* FI_REMOTE_WRITE counter in GPU memory; app-facing signal value. */
+  uint64_t* remote_write_value;
+
+  /* Reset baseline for offset-based reset; app-facing reads only. */
   uint64_t cntr_offset;
 };
 
@@ -126,15 +139,14 @@ struct nccl_ofi_gin_gdaki_dev_handle {
   /* Dedicated PutValue poster endpoint. */
   struct nccl_ofi_gin_gdaki_dev_endpoint_handle pvdata;
 
-  /* Per-counter / per-signal endpoint handles, populated when the
-   * caller asked createContext for nCounters / nSignals > 0. Both
-   * arrays index into the same underlying signal/counter endpoint
-   * (sc_endpoint) on the plugin side; they expose two views of that
-   * endpoint with cntr_value pointing at the FI_WRITE counter
-   * (counter_handles) or the FI_REMOTE_WRITE counter (signal_handles).
+  /* Per-counter / per-signal endpoint handles, populated when the caller
+   * asked createContext for nCounters / nSignals > 0. Both index into the
+   * same underlying sc_endpoint on the plugin side: a counter handle
+   * exposes its FI_WRITE counter via base.local_cntr_value; a signal
+   * handle adds the FI_REMOTE_WRITE counter via remote_write_value.
    * The array pointer is NULL when the corresponding count is zero. */
   struct nccl_ofi_gin_gdaki_dev_counter_handle** counter_handles; /* [nCounters] or NULL */
-  struct nccl_ofi_gin_gdaki_dev_counter_handle** signal_handles;  /* [nSignals]  or NULL */
+  struct nccl_ofi_gin_gdaki_dev_signal_handle**  signal_handles;  /* [nSignals]  or NULL */
   int32_t nCounters;
   int32_t nSignals;
 
