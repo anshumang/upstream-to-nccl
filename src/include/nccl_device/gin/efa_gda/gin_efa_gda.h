@@ -93,14 +93,14 @@ NCCL_DEVICE_INLINE static uint64_t hwCounterLoad(uint64_t* ptr) {
  *   - The caller is allowed to ring up to `target` (it holds the doorbell
  *     turn, or is draining already-handed-off slots).
  *   - Every WQE in [db_rung, target) is already visible to the NIC. Each
- *     producing group publishes its own WQEs with __threadfence_system()
- *     before handoff, so the WQE data is system-visible by the time any slot
- *     is eligible to be rung here.
+ *     producing lane publishes its own WQE with a system-scope fence before
+ *     the next slot is written, so the WQE data is system-visible by the time
+ *     any slot is eligible to be rung here.
  *
  * Only a post-doorbell fence is emitted (to order the doorbell MMIO write).
- * A pre-doorbell publish fence would be useless: __threadfence_system()
- * orders only the calling thread's own writes, and the WQEs being rung were
- * written by other threads. */
+ * A pre-doorbell publish fence would be useless: a fence orders only the
+ * calling thread's own writes, and the WQEs being rung were written by other
+ * threads. */
 template <ncclGinResourceSharingMode mode>
 NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted_count_ptr,
                                             cuda::atomic_ref<uint32_t, ncclGinScope<mode>>& dbrung_ref,
@@ -175,8 +175,8 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
    *
    * Coalescing: lanes of a warp targeting the same QP form a group via
    * coalesced_threads() + labeled_partition(qp). The leader reserves g
-   * = group.num_threads() contiguous slots; every member writes its own
-   * WQE in parallel; the leader rings one doorbell for the batch.
+   * = group.num_threads() contiguous slots; every member writes its own WQE
+   * in strict slot order; the leader rings one doorbell for the batch.
    *
    * max_batch bound: a group may be larger than the EFA staging limit
    * (a warp can have up to 32 lanes on one QP), so the group is chunked
@@ -186,10 +186,10 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
    *     un-doorbelled WQEs across ALL concurrent groups to max_batch.
    *   - SQ ring-overflow wait (leader): the chunk's high-water slot must
    *     be within sq_size of the NIC consumer (FI_WRITE counter).
-   *   - members write their WQEs in parallel.
-   *   - doorbell rendezvous (leader): wait until released == chunk_base
-   *     (strict slot order across groups), ring the doorbell, then
-   *     advance released to hand off to the next group. */
+   *   - doorbell rendezvous (leader): wait until released == chunk_base.
+   *   - members write and system-publish their WQEs in strict slot order.
+   *   - the leader rings the doorbell, then advances released to hand off
+   *     to the next group. */
   cooperative_groups::coalesced_group active = cooperative_groups::coalesced_threads();
   auto group = cooperative_groups::labeled_partition(active, (unsigned long long)(uintptr_t)qp);
 
@@ -258,54 +258,49 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
       while (((chunk_next - (uint32_t)hwCounterLoad(local_cntr_ptr)) & EFA_CNTR_MASK) > sq_size_val) {
         /* spin */
       }
-    }
-    group.sync();   /* members wait for leader's backpressure before writing */
-
-    /* Members in this window write their own WQE into their slot. */
-    if (my_idx >= chunk_start && my_idx < chunk_start + chunk_size) {
-      uint32_t my_slot = chunk_base + (uint32_t)(my_idx - chunk_start);
-
-      uint64_t wrSrcAddr = srcAddr;
-      uint32_t wrSrcLkey = srcLkey;
-      if (pvSrcVal != nullptr) {
-        /* PutValue: stage the value into this lane's pool slot, then point
-         * the SGE at it. */
-        uint64_t slot_idx = (uint64_t)my_slot % (uint64_t)sq_size_val;
-        uint64_t local_addr = pvSliceBase + slot_idx * (uint64_t)pvSlotSize;
-        for (uint32_t b = 0; b < pvValBytes; b++) ((uint8_t*)local_addr)[b] = ((const uint8_t*)pvSrcVal)[b];
-        wrSrcAddr = local_addr;
-        wrSrcLkey = pvLkey;
-      }
-
-      /* Only the source SGE is per-lane, the rest of wr was already built above. */
-      efa_cuda_wr_set_sge(&wr, wrSrcLkey, wrSrcAddr, writeBytes);
-
-      uint32_t sq_idx = my_slot & qp->sq.wq.queue_mask;
-      int wqe_phase = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
-      EFA_SET(&wr.meta.ctrl2, EFA_IO_TX_META_DESC_PHASE, wqe_phase);
-      uint64_t* src = (uint64_t*)&wr;
-      uint64_t* dst = (uint64_t*)(qp->sq.wq.buf + sq_idx * sizeof(efa_io_tx_wqe));
-      for (int i = 0; i < 8; i++) dst[i] = src[i];
-    }
-    group.sync();   /* all members' WQE writes for this chunk are done */
-
-    if (is_leader) {
-      /* Publish this group's WQE writes to system scope before handing off,
-       * so they are visible to the NIC whenever any doorbell (this group's or
-       * a later draining group's) rings a slot in this range.
-       * Each group must publish its own writes: __threadfence_system()
-       * orders only the calling thread's writes, and the handoff (base_ref)
-       * is device/block scope, so a later thread's fence cannot publish this
-       * group's writes for it. Runs on both the ring and the defer path.
-       *
-       * Use acq_rel (MEMBAR.ALL.SYS) instead of __threadfence_system
-       * (MEMBAR.SC.SYS). */
-      cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
-      /* Doorbell-order rendezvous: take the turn in strict slot order. */
+      /* Take the turn before writing. This serializes chunks across groups;
+       * the per-member loop below then serializes WQEs within this chunk. */
       while (base_ref.load(cuda::memory_order_acquire) != chunk_base) {
         /* spin */
       }
+    }
+    group.sync();   /* members wait for leader's backpressure and turn */
 
+    /* Write and publish one complete WQE before starting the next slot. A
+     * leader-only fence cannot publish stores issued by the other lanes, and
+     * per-lane fences without this serialization do not order lanes against
+     * each other. */
+    for (int writer = chunk_start; writer < chunk_start + chunk_size; writer++) {
+      if (my_idx == writer) {
+        uint32_t my_slot = chunk_base + (uint32_t)(my_idx - chunk_start);
+
+        uint64_t wrSrcAddr = srcAddr;
+        uint32_t wrSrcLkey = srcLkey;
+        if (pvSrcVal != nullptr) {
+          /* PutValue: stage the value into this lane's pool slot, then point
+           * the SGE at it. */
+          uint64_t slot_idx = (uint64_t)my_slot % (uint64_t)sq_size_val;
+          uint64_t local_addr = pvSliceBase + slot_idx * (uint64_t)pvSlotSize;
+          for (uint32_t b = 0; b < pvValBytes; b++) ((uint8_t*)local_addr)[b] = ((const uint8_t*)pvSrcVal)[b];
+          wrSrcAddr = local_addr;
+          wrSrcLkey = pvLkey;
+        }
+
+        /* Only the source SGE is per-lane, the rest of wr was already built above. */
+        efa_cuda_wr_set_sge(&wr, wrSrcLkey, wrSrcAddr, writeBytes);
+
+        uint32_t sq_idx = my_slot & qp->sq.wq.queue_mask;
+        int wqe_phase = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
+        EFA_SET(&wr.meta.ctrl2, EFA_IO_TX_META_DESC_PHASE, wqe_phase);
+        uint64_t* src = (uint64_t*)&wr;
+        uint64_t* dst = (uint64_t*)(qp->sq.wq.buf + sq_idx * sizeof(efa_io_tx_wqe));
+        for (int i = 0; i < 8; i++) dst[i] = src[i];
+        cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+      }
+      group.sync();
+    }
+
+    if (is_leader) {
       /* Ring unless aggregating. Force a ring if deferring would leave
        * more than max_batch un-rung WQEs (db_rung is the last rung slot),
        * so the EFA staging limit is never exceeded. When we do ring, ring
