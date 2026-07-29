@@ -70,16 +70,17 @@ NCCL_DEVICE_INLINE static void scopedAtomicAdd(uint64_t* ptr, uint64_t val) {
 
 /* ── NIC-written hardware counter (FI_WRITE / FI_REMOTE_WRITE) ────── */
 
-/* Read a NIC-written hardware counter from GPU memory. Uses system-scope
- * acquire so the load is coherent with the NIC's PCIe writes (bypasses
- * GPU caches) and subsequent operations on this thread cannot be
- * reordered to before the load. The acquire matches libfabric's
- * local-completion contract: when this load observes the counter has
- * reached a target, the NIC's prior side effects (e.g. source-buffer
- * DMA-reads complete) are ordered-before whatever this thread does
- * next (e.g. overwriting that source buffer or reusing the slot). */
+/* Read a NIC-written hardware counter from GPU memory. System scope makes
+ * the load coherent with the NIC's PCIe writes (bypasses GPU caches).
+ * Acquire is the default and matches libfabric's local-completion contract:
+ * when this load observes the counter has reached a target, the NIC's prior
+ * side effects (e.g. source-buffer DMA-reads complete) are ordered-before
+ * whatever this thread does next (e.g. overwriting that source buffer or
+ * reusing the slot). Polling loops may use relaxed ordering followed by a
+ * system-scope acquire fence after the successful observation. */
+template <cuda::memory_order Order = cuda::memory_order_acquire>
 NCCL_DEVICE_INLINE static uint64_t hwCounterLoad(uint64_t* ptr) {
-  return scopedAtomicLoad<cuda::thread_scope_system, cuda::memory_order_acquire>(ptr);
+  return scopedAtomicLoad<cuda::thread_scope_system, Order>(ptr);
 }
 
 /* ── ringDoorbell: shared doorbell-ring used by the post-path ring sites ─
@@ -237,7 +238,7 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
        * <= max_batch, so one doorbell drains it. If we do not yet hold the
        * turn, a lower group does and will either ring (advancing db_rung) or
        * hand off (advancing base_ref); keep checking until our chunk fits. */
-      while (chunk_next - dbrung_ref.load(cuda::memory_order_acquire) > max_batch) {
+      while (chunk_next - dbrung_ref.load(cuda::memory_order_relaxed) > max_batch) {
         if (base_ref.load(cuda::memory_order_acquire) == chunk_base) {
           uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
           if (chunk_base != db_rung) {   /* deferred, already-written batch */
@@ -245,9 +246,11 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
           }
         }
       }
+      cuda::atomic_thread_fence(cuda::memory_order_acquire, ncclGinScope<mode>);
       /* SQ ring-overflow backpressure on the chunk's high-water slot.
-       * System-scope acquire so we see the latest NIC FI_WRITE update
-       * and the WQE stores below can't hoist above this load.
+       * Poll the NIC FI_WRITE counter with system-scope relaxed loads, then
+       * acquire once so the WQE stores below cannot hoist above the successful
+       * observation.
        *
        * In-flight count is computed as a 31-bit modular difference
        * (producer chunk_next minus the NIC FI_WRITE counter): the HW
@@ -255,9 +258,11 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
        * widened subtraction would underflow once either side wraps.
        * The true in-flight depth is bounded by sq_size (4096) « 2^31,
        * so the masked difference is exact. */
-      while (((chunk_next - (uint32_t)hwCounterLoad(local_cntr_ptr)) & EFA_CNTR_MASK) > sq_size_val) {
+      while (((chunk_next - (uint32_t)hwCounterLoad<cuda::memory_order_relaxed>(local_cntr_ptr)) & EFA_CNTR_MASK) >
+             sq_size_val) {
         /* spin */
       }
+      cuda::atomic_thread_fence(cuda::memory_order_acquire, cuda::thread_scope_system);
     }
     group.sync();   /* members wait for leader's backpressure before writing */
 
@@ -294,9 +299,10 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
 
     if (is_leader) {
       /* Doorbell-order rendezvous: take the turn in strict slot order. */
-      while (base_ref.load(cuda::memory_order_acquire) != chunk_base) {
+      while (base_ref.load(cuda::memory_order_relaxed) != chunk_base) {
         /* spin */
       }
+      cuda::atomic_thread_fence(cuda::memory_order_acquire, ncclGinScope<mode>);
 
       /* Ring unless aggregating. Force a ring if deferring would leave
        * more than max_batch un-rung WQEs (db_rung is the last rung slot),
