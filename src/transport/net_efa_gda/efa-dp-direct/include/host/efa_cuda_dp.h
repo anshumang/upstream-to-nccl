@@ -19,6 +19,10 @@ struct efa_cuda_cq_attrs {
 	uint32_t entry_size;
 };
 
+enum efa_cuda_wq_caps {
+	EFA_CUDA_WQ_CAPS_64_BIT_REQ_ID = 1 << 0,
+};
+
 struct efa_cuda_qp_attrs {
 	uint64_t comp_mask;
 	uint64_t flags;
@@ -31,7 +35,10 @@ struct efa_cuda_qp_attrs {
 	uint32_t sq_max_batch;
 	uint32_t rq_num_entries;
 	uint32_t rq_entry_size;
-	uint32_t reserved;
+	uint32_t sq_max_inline_data;
+	uint32_t sq_max_rdma_sges;
+	uint32_t sq_wq_caps;
+	uint32_t rq_wq_caps;
 };
 
 struct efa_cuda_cq;
