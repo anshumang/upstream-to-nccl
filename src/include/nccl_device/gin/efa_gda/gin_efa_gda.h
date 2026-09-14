@@ -17,6 +17,7 @@
 #ifndef _NCCL_DEVICE_GIN_EFA_GDA_H_
 #define _NCCL_DEVICE_GIN_EFA_GDA_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <cuda/atomic>
 #include <cooperative_groups.h>
@@ -60,6 +61,202 @@ static constexpr uint32_t EFA_CNTR_MASK = 0x7fffffffu;
  * SGE length field additionally truncates sizes >= 4 GiB. Larger puts are
  * split into chunks of at most this size in putImplMode. */
 static constexpr uint32_t EFA_GDA_MAX_WRITE_SIZE = 1u << 30;
+
+/* ── Single-issuer-per-QP specialization (NCCLOFI-1945) ─────────────
+ *
+ * Three build-time selectors, all defaulting OFF so the generated code is
+ * unchanged unless a caller opts in. Measured on H200 (16 node pairs x 1000
+ * launches, per-launch mean of 17 paced 168 KiB puts, 1 issuing thread per SM,
+ * private QP per issuer): the fence removal is worth -1.56 us (1 SM) to
+ * -1.76 us (48 SMs) per put, the register build -0.65 us flat, and they are
+ * additive (-2.15 .. -2.41 us against the unmodified header, 32% of control).
+ *
+ * NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP
+ *   Exploits the precondition that exactly ONE thread ever posts to a given
+ *   QP. Under that precondition the post-doorbell system fence in ringDoorbell
+ *   is dead, which removes one MEMBAR.ALL.SYS per put.
+ *
+ *   Why it is dead. The post-doorbell fence exists only to order this thread's
+ *   doorbell MMIO write before the release-stores that hand the QP off
+ *   (dbrung_ref / base_ref), so that a LATER group's higher doorbell value
+ *   cannot overtake this one and make the NIC observe a non-monotonic producer
+ *   index. With one issuing thread there is no later group and no handoff to
+ *   order against. Successive doorbell writes from one thread go to the SAME
+ *   address, and PTX guarantees mmio writes are always performed, never
+ *   combined, and that same-address writes follow program order in coherence
+ *   order -- with the NIC in scope, since these are .sys. So monotonicity holds
+ *   with no fence. Publish-before-ring is still enforced per put by the
+ *   pre-doorbell WQE fence, which is NOT removed.
+ *
+ *   What removal does lose is the ordering of this put's doorbell before the
+ *   NEXT put's WQE-body stores from the same thread. That property was never
+ *   load-bearing: the original multi-writer code did not have it either (a
+ *   fence orders only the fencing thread's own writes), and the LLQ contract
+ *   is that the doorbell is the authorization gate -- the device never fetches
+ *   a WQE beyond the rung producer index, so a body written early sits inert.
+ *
+ *   The precondition is not checked on the device. With more than one poster
+ *   per QP the removed fence is NOT dead and doorbell monotonicity across groups
+ *   is no longer guaranteed; the caller must guarantee one poster per QP at
+ *   setup time.
+ *
+ * NCCL_GIN_EFA_GDA_WQE_STORE_B128
+ *   Writes the WQE body with st.mmio.relaxed.sys.global.b128 instead of b64,
+ *   4 stores instead of 8. The SQ is EFA's Low Latency Queue, a write-combined
+ *   BAR aperture (efa.ko maps it EFA_MMAP_IO_WC) that libfabric already writes
+ *   with 16-byte stores on aarch64 (vst4q_u64 in prov/efa/src/efa_mmio.h).
+ *   Needs 16-byte alignment of both ends: measured page-aligned SQ buffers and
+ *   64-byte entries on every EFA device, but that is a DEVICE-REPORTED offset
+ *   with no contract, so a shipping version must verify it once on the host at
+ *   context creation. Measured worth: nothing (+0.01..+0.05 us on H200).
+ *
+ * NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD
+ *   Builds the WQE image as 64-bit words in registers (EfaGdaWqeRegs) and stores
+ *   them to the SQ slot directly, instead of building an efa_io_tx_wqe on the
+ *   stack through the efa_cuda_* helpers and copying it out. The helper path
+ *   cannot keep the WQE in registers: it does byte-granular read-modify-writes
+ *   on the ctrl bytes through a void* and starts with a memset, so the image
+ *   round-trips through local memory (~30 STL + 12 LDL.128 per put in the
+ *   SASS). The register build is ~20 integer ops with no memory traffic. Field
+ *   placement is pinned at compile time by static_asserts on the
+ *   efa_io_tx_wqe layout. */
+#ifndef NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP
+#define NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP 0
+#endif
+#ifndef NCCL_GIN_EFA_GDA_WQE_STORE_B128
+#define NCCL_GIN_EFA_GDA_WQE_STORE_B128 0
+#endif
+#ifndef NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD
+#define NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD 0
+#endif
+
+enum efaGdaWqeStoreWidth {
+  EFA_GDA_WQE_STORE_B64,
+  EFA_GDA_WQE_STORE_B128
+};
+
+/* Copy a fully-built 64-byte WQE into its SQ slot with relaxed system-scope
+ * MMIO stores, in ascending address order. Emits no fence: the caller
+ * publishes. Fully unrolled so the store count is deterministic in the SASS. */
+template <efaGdaWqeStoreWidth storeWidth>
+NCCL_DEVICE_INLINE static void storeWqeMmio(uint64_t dstAddr, const void* src) {
+  if NCCL_IF_CONSTEXPR (storeWidth == EFA_GDA_WQE_STORE_B128) {
+    const unsigned __int128* s = (const unsigned __int128*)src;
+#pragma unroll
+    for (uint32_t i = 0; i < sizeof(efa_io_tx_wqe) / 16u; i++) {
+      unsigned __int128 value = s[i];
+      asm volatile("st.mmio.relaxed.sys.global.b128 [%0], %1;"
+                   :
+                   : "l"(dstAddr + i * 16u), "q"(value)
+                   : "memory");
+    }
+  } else {
+    const uint64_t* s = (const uint64_t*)src;
+#pragma unroll
+    for (uint32_t i = 0; i < sizeof(efa_io_tx_wqe) / 8u; i++) {
+      uint64_t value = s[i];
+      asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
+                   :
+                   : "l"(dstAddr + i * 8u), "l"(value)
+                   : "memory");
+    }
+  }
+}
+
+/* ── Register-resident WQE image (NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD) ──
+ *
+ * The 64-byte RDMA-write WQE as 8 little-endian 64-bit words. Every index is a
+ * compile-time constant, so the array lives in registers. Word map (byte
+ * offsets from efa_io_defs.h; pinned by the static_asserts):
+ *
+ *   w0  [ 0.. 8)  req_id:16 | ctrl1:8 | ctrl2:8 | dest_qp_num:16 | length:16
+ *   w1  [ 8..16)  immediate_data:32 | ah:16 | ctrl3:8 | reserved:8
+ *   w2  [16..24)  qkey:32 | reserved2[0..4)
+ *   w3  [24..32)  reserved2[4..12)                              (MBZ)
+ *   w4  [32..40)  remote_mem.length:32 | remote_mem.rkey:32
+ *   w5  [40..48)  remote_mem.buf_addr (lo | hi<<32)
+ *   w6  [48..56)  local_mem.length:32 | local_mem.lkey:32
+ *   w7  [56..64)  local_mem.buf_addr
+ *
+ * Produces byte-for-byte what efa_cuda_init_rdma_write_wr + efa_cuda_wr_set_remote
+ * + efa_cuda_wr_set_processing_hints(BURST_PPS_SENSITIVE) + efa_cuda_wr_set_sge
+ * produce, with the phase bit patched in. */
+struct EfaGdaWqeRegs {
+  static constexpr uint32_t Words = sizeof(efa_io_tx_wqe) / 8u;
+  uint64_t w[Words];
+
+  static_assert(sizeof(struct efa_io_tx_wqe) == 64u, "efa_io_tx_wqe must be 64 bytes");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, req_id) == 0u, "meta.req_id");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl1) == 2u, "meta.ctrl1");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl2) == 3u, "meta.ctrl2");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, dest_qp_num) == 4u, "meta.dest_qp_num");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, length) == 6u, "meta.length");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, immediate_data) == 8u, "meta.immediate_data");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ah) == 12u, "meta.ah");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl3) == 14u, "meta.ctrl3");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, qkey) == 16u, "meta.qkey");
+  static_assert(sizeof(struct efa_io_tx_meta_desc) == 32u, "meta is 32 bytes");
+  static_assert(offsetof(struct efa_io_tx_wqe, data.rdma_req.remote_mem) == 32u, "remote_mem at 32");
+  static_assert(offsetof(struct efa_io_tx_wqe, data.rdma_req.local_mem) == 48u, "local_mem at 48");
+  static_assert(offsetof(struct efa_io_remote_mem_addr, length) == 0u && offsetof(struct efa_io_remote_mem_addr, rkey) == 4u &&
+                offsetof(struct efa_io_remote_mem_addr, buf_addr_lo) == 8u, "remote_mem layout");
+  static_assert(offsetof(struct efa_io_tx_buf_desc, length) == 0u && offsetof(struct efa_io_tx_buf_desc, lkey) == 4u &&
+                offsetof(struct efa_io_tx_buf_desc, buf_addr_lo) == 8u, "tx_buf_desc layout");
+
+  /* Everything except the SGE and the phase bit. */
+  NCCL_DEVICE_INLINE void initRdmaWrite(uint16_t reqId, uint16_t ah, uint16_t qpn, uint32_t qkey, uint64_t dstAddr,
+                                        uint32_t dstRkey) {
+    constexpr uint64_t ctrl1 = (uint64_t)EFA_IO_TX_META_DESC_META_DESC_MASK |
+                               ((uint64_t)EFA_IO_RDMA_WRITE & EFA_IO_TX_META_DESC_OP_TYPE_MASK);
+    constexpr uint64_t ctrl2 = (uint64_t)EFA_IO_TX_META_DESC_FIRST_MASK | (uint64_t)EFA_IO_TX_META_DESC_LAST_MASK |
+                               (uint64_t)EFA_IO_TX_META_DESC_COMP_REQ_MASK;
+    constexpr uint64_t ctrl3 = (uint64_t)EFA_IO_PROCESSING_HINT_BURST_PPS_SENSITIVE & EFA_IO_TX_META_DESC_PROCESSING_HINTS_MASK;
+    w[0] = (uint64_t)reqId | (ctrl1 << 16) | (ctrl2 << 24) | ((uint64_t)qpn << 32);
+    w[1] = ((uint64_t)ah << 32) | (ctrl3 << 48);
+    w[2] = (uint64_t)qkey;
+    w[3] = 0;
+    w[4] = (uint64_t)dstRkey << 32;
+    w[5] = dstAddr;
+    w[6] = 0;
+    w[7] = 0;
+  }
+
+  /* One SGE: meta.length = 1 (SGL entry count), remote and local lengths = bytes. */
+  NCCL_DEVICE_INLINE void setSge(uint32_t lkey, uint64_t addr, uint32_t bytes) {
+    w[0] |= 1ull << 48;
+    w[4] |= (uint64_t)bytes;
+    w[6] = (uint64_t)bytes | ((uint64_t)(lkey & EFA_IO_TX_BUF_DESC_LKEY_MASK) << 32);
+    w[7] = addr;
+  }
+
+  NCCL_DEVICE_INLINE void setPhase(uint32_t phase) {
+    w[0] |= ((uint64_t)phase & EFA_IO_TX_META_DESC_PHASE_MASK) << 24;
+  }
+
+  /* Store the image to its SQ slot straight from registers, ascending address
+   * order, relaxed system-scope MMIO. No fence; the caller publishes. */
+  template <efaGdaWqeStoreWidth storeWidth>
+  NCCL_DEVICE_INLINE void storeMmio(uint64_t dstAddr) const {
+    if NCCL_IF_CONSTEXPR (storeWidth == EFA_GDA_WQE_STORE_B128) {
+#pragma unroll
+      for (uint32_t i = 0; i < Words; i += 2) {
+        unsigned __int128 value = ((unsigned __int128)w[i + 1] << 64) | (unsigned __int128)w[i];
+        asm volatile("st.mmio.relaxed.sys.global.b128 [%0], %1;"
+                     :
+                     : "l"(dstAddr + i * 8u), "q"(value)
+                     : "memory");
+      }
+    } else {
+#pragma unroll
+      for (uint32_t i = 0; i < Words; i++) {
+        asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
+                     :
+                     : "l"(dstAddr + i * 8u), "l"(w[i])
+                     : "memory");
+      }
+    }
+  }
+};
 
 /* ── Atomic primitives parameterized on scope and memory order ────── */
 
@@ -107,16 +304,21 @@ NCCL_DEVICE_INLINE static uint64_t hwCounterLoad(uint64_t* ptr) {
  * Only a post-doorbell fence is emitted (to order the doorbell MMIO write).
  * A pre-doorbell publish fence would be useless: __threadfence_system()
  * orders only the calling thread's own writes, and the WQEs being rung were
- * written by other threads. */
-template <ncclGinResourceSharingMode mode>
+ * written by other threads.
+ *
+ * Under SingleIssuerPerQp the post-doorbell fence is omitted; see the
+ * soundness argument at NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP above. */
+template <ncclGinResourceSharingMode mode, bool SingleIssuerPerQp = false>
 NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted_count_ptr,
                                             cuda::atomic_ref<uint32_t, ncclGinScope<mode>>& dbrung_ref,
                                             uint32_t db_rung, uint32_t target) {
   uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
   asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
-  /* Order the doorbell MMIO write. Use acq_rel (MEMBAR.ALL.SYS) instead of
-   * __threadfence_system (MEMBAR.SC.SYS). */
-  cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+  if NCCL_IF_CONSTEXPR (!SingleIssuerPerQp) {
+    /* Order the doorbell MMIO write. Use acq_rel (MEMBAR.ALL.SYS) instead of
+     * __threadfence_system (MEMBAR.SC.SYS). */
+    cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+  }
   scopedAtomicAdd<ncclGinScope<mode>, cuda::memory_order_relaxed>(submitted_count_ptr, (uint64_t)(target - db_rung));
   dbrung_ref.store(target, cuda::memory_order_release);
 }
@@ -135,7 +337,11 @@ NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted
  * its own pool slot at pvSliceBase + (reserved SQ slot % sq_size) *
  * pvSlotSize and points the WR's SGE there. Put (pvSrcVal == nullptr) uses
  * the caller's fixed srcAddr/srcLkey. */
-template <ncclGinResourceSharingMode mode>
+template <ncclGinResourceSharingMode mode,
+          bool SingleIssuerPerQp = (NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP != 0),
+          efaGdaWqeStoreWidth storeWidth =
+            (NCCL_GIN_EFA_GDA_WQE_STORE_B128 != 0) ? EFA_GDA_WQE_STORE_B128 : EFA_GDA_WQE_STORE_B64,
+          bool RegisterBuild = (NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD != 0)>
 NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint16_t ah, uint16_t qpn,
                                              uint32_t qkey, uint64_t srcAddr, uint32_t srcLkey, uint32_t writeBytes,
                                              uint64_t dstAddr, uint32_t dstRkey,
@@ -147,15 +353,20 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
   uint64_t* local_cntr_ptr = ep->local_cntr_value;
   uint32_t sq_size_val = ep->sq_size;
 
-  /* Only the SGE differs for PutValue, so set_sge is deferred. */
-  efa_io_tx_wqe wr;
-  efa_cuda_init_rdma_write_wr(&wr, (uint16_t)threadIdx.x, dstRkey, dstAddr);
-  efa_cuda_wr_set_remote(&wr, ah, (uint32_t)qpn, qkey);
-  /* Tag the WQE as PPS-sensitive. GIN puts are small, high-rate writes, so
-   * ask the NIC to optimize for packets-per-second (burst PPS) rather than
-   * bandwidth. This sets the PROCESSING_HINTS field in the WQE meta
-   * descriptor (ctrl3); it is a hint, so the device may ignore it. */
-  efa_cuda_wr_set_processing_hints(&wr, EFA_CUDA_PROCESSING_HINT_BURST_PPS_SENSITIVE);
+  /* Only the SGE differs for PutValue, so set_sge is deferred. Under
+   * RegisterBuild the image is assembled in registers per lane instead (see
+   * EfaGdaWqeRegs) and this staging buffer is not emitted. 16-byte alignment
+   * is required only for the b128 store path. */
+  alignas((storeWidth == EFA_GDA_WQE_STORE_B128) ? 16 : alignof(efa_io_tx_wqe)) efa_io_tx_wqe wr;
+  if NCCL_IF_CONSTEXPR (!RegisterBuild) {
+    efa_cuda_init_rdma_write_wr(&wr, (uint16_t)threadIdx.x, dstRkey, dstAddr);
+    efa_cuda_wr_set_remote(&wr, ah, (uint32_t)qpn, qkey);
+    /* Tag the WQE as PPS-sensitive. GIN puts are small, high-rate writes, so
+     * ask the NIC to optimize for packets-per-second (burst PPS) rather than
+     * bandwidth. This sets the PROCESSING_HINTS field in the WQE meta
+     * descriptor (ctrl3); it is a hint, so the device may ignore it. */
+    efa_cuda_wr_set_processing_hints(&wr, EFA_CUDA_PROCESSING_HINT_BURST_PPS_SENSITIVE);
+  }
 
   /* Sliding-window SQ post with warp coalescing (Stage 2).
    *
@@ -249,7 +460,7 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
         if (base_ref.load(cuda::memory_order_acquire) == chunk_base) {
           uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
           if (chunk_base != db_rung) {   /* deferred, already-written batch */
-            ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_base);
+            ringDoorbell<mode, SingleIssuerPerQp>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_base);
           }
         }
       }
@@ -285,27 +496,44 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
         wrSrcLkey = pvLkey;
       }
 
-      /* Only the source SGE is per-lane, the rest of wr was already built above. */
-      efa_cuda_wr_set_sge(&wr, wrSrcLkey, wrSrcAddr, writeBytes);
+      if NCCL_IF_CONSTEXPR (RegisterBuild) {
+        uint32_t sq_idx = my_slot & qp->sq.wq.queue_mask;
+        uint32_t wqe_phase = (my_slot >> qp->sq.wq.queue_size_shift) & 1u;
+        uint64_t* dst = (uint64_t*)(qp->sq.wq.buf + sq_idx * sizeof(efa_io_tx_wqe));
+        uint64_t slotAddr = (uint64_t)__cvta_generic_to_global(dst);
+        EfaGdaWqeRegs regs;
+        regs.initRdmaWrite((uint16_t)threadIdx.x, ah, qpn, qkey, dstAddr, dstRkey);
+        regs.setSge(wrSrcLkey, wrSrcAddr, writeBytes);
+        regs.setPhase(wqe_phase);
+        regs.storeMmio<storeWidth>(slotAddr);
+      } else {
+        /* Only the source SGE is per-lane, the rest of wr was already built above. */
+        efa_cuda_wr_set_sge(&wr, wrSrcLkey, wrSrcAddr, writeBytes);
 
-      uint32_t sq_idx = my_slot & qp->sq.wq.queue_mask;
-      int wqe_phase = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
-      EFA_SET(&wr.meta.ctrl2, EFA_IO_TX_META_DESC_PHASE, wqe_phase);
-      uint64_t* src = (uint64_t*)&wr;
-      uint64_t* dst = (uint64_t*)(qp->sq.wq.buf + sq_idx * sizeof(efa_io_tx_wqe));
-      /* One final system-scope fence publishes the complete WQE after these
-       * relaxed MMIO stores. */
-      uint64_t dstAddr = (uint64_t)__cvta_generic_to_global(dst);
+        uint32_t sq_idx = my_slot & qp->sq.wq.queue_mask;
+        int wqe_phase = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
+        EFA_SET(&wr.meta.ctrl2, EFA_IO_TX_META_DESC_PHASE, wqe_phase);
+        uint64_t* src = (uint64_t*)&wr;
+        uint64_t* dst = (uint64_t*)(qp->sq.wq.buf + sq_idx * sizeof(efa_io_tx_wqe));
+        uint64_t dstAddr = (uint64_t)__cvta_generic_to_global(dst);
+        if NCCL_IF_CONSTEXPR (storeWidth == EFA_GDA_WQE_STORE_B128) {
+          storeWqeMmio<storeWidth>(dstAddr, &wr);
+        } else {
 #pragma unroll
-      for (int i = 0; i < 8; i++) {
-        uint64_t value = src[i];
-        asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
-                     :
-                     : "l"(dstAddr + i * sizeof(uint64_t)), "l"(value)
-                     : "memory");
+          for (int i = 0; i < 8; i++) {
+            uint64_t value = src[i];
+            asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
+                         :
+                         : "l"(dstAddr + i * sizeof(uint64_t)), "l"(value)
+                         : "memory");
+          }
+        }
       }
       /* Publish this group's WQE writes to system scope so they are visible
-       * to the NIC whenever any doorbell rings a slot in this range. */
+       * to the NIC whenever any doorbell rings a slot in this range. This is
+       * the pre-doorbell publish fence and is required in every mode: the
+       * WQE-body stores and the doorbell are relaxed mmio to DIFFERENT
+       * addresses, so nothing else orders them. */
       cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
     }
     group.sync();   /* all members' WQE writes for this chunk are done */
@@ -325,7 +553,7 @@ NCCL_DEVICE_INLINE static void postRdmaWrite(nccl_ofi_gin_gdaki_dev_endpoint_han
       uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
       bool must_ring = (!aggregate) || (chunk_next - db_rung >= max_batch);
       if (must_ring) {
-        ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_next);
+        ringDoorbell<mode, SingleIssuerPerQp>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_next);
       } else {
         /* Publish this group's WQE writes to system scope before handing off,
          * so they are visible to the NIC whenever any doorbell (this group's or
