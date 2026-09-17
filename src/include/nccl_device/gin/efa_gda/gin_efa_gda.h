@@ -291,7 +291,12 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
    * the NIC without help from any lane waiting here. This needs
    * max_batch + 32 < peer_window, which the plugin checks at context setup. */
   cooperative_groups::coalesced_group active = cooperative_groups::coalesced_threads();
-  auto peerGroup = cooperative_groups::labeled_partition(active, peerIdx);
+  /* The admission counters below belong to a logical context, not to a peer
+   * globally. Partition by the context handle first so converged lanes using
+   * private contexts never reserve pseq/CQ positions on another context. */
+  auto contextGroup =
+    cooperative_groups::labeled_partition(active, (unsigned long long)(uintptr_t)dev);
+  auto peerGroup = cooperative_groups::labeled_partition(contextGroup, peerIdx);
 
   uint32_t blockSize = (uint32_t)peerGroup.num_threads();
   uint32_t blockBase = 0;
