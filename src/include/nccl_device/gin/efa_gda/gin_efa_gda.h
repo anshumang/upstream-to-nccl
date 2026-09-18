@@ -50,6 +50,7 @@
 #ifndef _NCCL_DEVICE_GIN_EFA_GDA_H_
 #define _NCCL_DEVICE_GIN_EFA_GDA_H_
 
+#include <cstddef>
 #include <cstdint>
 #include <cuda/atomic>
 #include <cooperative_groups.h>
@@ -258,6 +259,157 @@ NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted
   dbrung_ref.store(target, cuda::memory_order_release);
 }
 
+/* ── Register-resident WQE image ──────────────────────────────────────
+ *
+ * NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD (build-time, default OFF)
+ *   Builds the WQE image as 64-bit words in registers and stores them to the SQ
+ *   slot directly, instead of going through EfaCudaWrBuilder and a stack-resident
+ *   efa_io_tx_wqe_128 staging buffer.
+ *
+ *   Why. The builder cannot keep the WQE in registers: it addresses the buffer
+ *   through a uint8_t* at offsets loaded at runtime from efa_cuda_wr_ctx, does
+ *   byte-granular read-modify-writes on the ctrl bytes, and zeroes the buffer
+ *   with a runtime-trip loop. In SASS that is ~30 STL (byte/halfword/word,
+ *   partially overlapping) plus 4 dependent LDG.U8 offset loads, then 12
+ *   LDL.128 to read the image back before the MMIO stores: a local-memory
+ *   round trip on every put.
+ *
+ *   The register build is ~20 integer ops with no memory traffic. Field
+ *   placement is pinned at compile time with static_asserts against the
+ *   efa_io_tx_wqe / efa_io_tx_wqe_128 layouts, which are exactly what the host
+ *   side (efa_init_sq_wr_ctx_v0) uses to populate the runtime offsets. No device
+ *   assert is emitted on the put path; a shipping version must compare the
+ *   published wr_ctx offsets against EfaGdaWqeRegs::k*Offset once on the host
+ *   at context creation so a layout skew fails there.
+ *
+ * The RDMA write/read WQE as WqeBytes/8 little-endian 64-bit words. Every index
+ * below is a compile-time constant, so the array lives in registers. Word map
+ * (byte offsets from efa_io_defs.h; pinned by the static_asserts):
+ *
+ *   w0  [ 0.. 8)  req_id:16 | ctrl1:8 | ctrl2:8 | dest_qp_num:16 | length:16
+ *   w1  [ 8..16)  immediate_data:32 | ah:16 | ctrl3:8 | reserved:8
+ *   w2  [16..24)  qkey:32 | reserved2[0..4)
+ *   w3  [24..32)  reserved2[4..6) | req_id_ex.w[0..3)   == req_id & ~0xFFFF
+ *   w4  [32..40)  remote_mem.length:32 | remote_mem.rkey:32
+ *   w5  [40..48)  remote_mem.buf_addr (lo | hi<<32)
+ *   w6  [48..56)  local_mem.length:32 | local_mem.lkey:32     (or inline data)
+ *   w7  [56..64)  local_mem.buf_addr                           (or inline data)
+ *   w8..w15       MBZ (128-byte WQE only; inline data may extend into them)
+ *
+ * The 64B and 128B layouts place remote_mem and local_mem at the same offsets
+ * (32 and 48); RDMA-write inline data also starts at 48 and exists only in the
+ * 128B form. */
+#ifndef NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD
+#define NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD 0
+#endif
+
+template <uint32_t WqeBytes>
+struct EfaGdaWqeRegs {
+  static_assert(WqeBytes == 64u || WqeBytes == 128u, "EFA WQE is 64 or 128 bytes");
+  static constexpr uint32_t Words = WqeBytes / 8u;
+  uint64_t w[Words];
+
+  /* Single-bit ctrl flags from efa_io_defs.h. Spelled out here because that
+   * header defines them via BIT(), which efa_cuda_dp_impl.cuh #undef's at its
+   * end; the multi-bit GENMASK() fields remain usable and are taken from it. */
+  static constexpr uint64_t kCtrl1MetaDesc = 1ull << 7;    /* EFA_IO_TX_META_DESC_META_DESC  */
+  static constexpr uint64_t kCtrl1InlineMsg = 1ull << 5;   /* EFA_IO_TX_META_DESC_INLINE_MSG */
+  static constexpr uint64_t kCtrl2Phase = 1ull << 0;       /* EFA_IO_TX_META_DESC_PHASE      */
+  static constexpr uint64_t kCtrl2First = 1ull << 2;       /* EFA_IO_TX_META_DESC_FIRST      */
+  static constexpr uint64_t kCtrl2Last = 1ull << 3;        /* EFA_IO_TX_META_DESC_LAST       */
+  static constexpr uint64_t kCtrl2CompReq = 1ull << 4;     /* EFA_IO_TX_META_DESC_COMP_REQ   */
+
+  /* Offsets the host writes into efa_cuda_wr_ctx (efa_init_sq_wr_ctx_v0). */
+  static constexpr uint32_t kRemoteMemOffset = 32u;
+  static constexpr uint32_t kLocalMemOffset = 48u;
+  static constexpr uint32_t kWriteInlineOffset = (WqeBytes == 128u) ? 48u : 0u;
+
+  static_assert(sizeof(struct efa_io_tx_wqe) == 64u, "efa_io_tx_wqe must be 64 bytes");
+  static_assert(sizeof(struct efa_io_tx_wqe_128) == 128u, "efa_io_tx_wqe_128 must be 128 bytes");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, req_id) == 0u, "meta.req_id");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl1) == 2u, "meta.ctrl1");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl2) == 3u, "meta.ctrl2");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, dest_qp_num) == 4u, "meta.dest_qp_num");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, length) == 6u, "meta.length");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, immediate_data) == 8u, "meta.immediate_data");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ah) == 12u, "meta.ah");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl3) == 14u, "meta.ctrl3");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, qkey) == 16u, "meta.qkey");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, req_id_ex) == 26u, "meta.req_id_ex");
+  static_assert(offsetof(struct efa_io_tx_wqe, data.rdma_req.remote_mem) == kRemoteMemOffset, "64B remote_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe, data.rdma_req.local_mem) == kLocalMemOffset, "64B local_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe_128, data.rdma_req.remote_mem) == kRemoteMemOffset, "128B remote_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe_128, data.rdma_req.local_mem) == kLocalMemOffset, "128B local_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe_128, data.rdma_req.inline_data) == 48u, "128B inline_data");
+  static_assert(offsetof(struct efa_io_remote_mem_addr, length) == 0u && offsetof(struct efa_io_remote_mem_addr, rkey) == 4u &&
+                offsetof(struct efa_io_remote_mem_addr, buf_addr_lo) == 8u, "remote_mem layout");
+  static_assert(offsetof(struct efa_io_tx_buf_desc, length) == 0u && offsetof(struct efa_io_tx_buf_desc, lkey) == 4u &&
+                offsetof(struct efa_io_tx_buf_desc, buf_addr_lo) == 8u, "tx_buf_desc layout");
+
+  /* Everything except the payload descriptor and the phase bit. Mirrors
+   * EfaCudaWrBuilder::init_wr + set_remote_mem + set_remote +
+   * set_processing_hints(BURST_PPS_SENSITIVE). meta.length and remote_mem.length
+   * are left zero for the payload encoder to fill. */
+  template <efaGdaRdmaOp op>
+  NCCL_DEVICE_INLINE void initRdma(uint64_t reqId, uint16_t ah, uint16_t qpn, uint32_t qkey, uint64_t dstAddr,
+                                   uint32_t dstRkey) {
+    constexpr uint32_t opType = (op == EFA_GDA_RDMA_READ) ? (uint32_t)EFA_IO_RDMA_READ : (uint32_t)EFA_IO_RDMA_WRITE;
+    constexpr uint64_t ctrl1 = kCtrl1MetaDesc | (opType & EFA_IO_TX_META_DESC_OP_TYPE_MASK);
+    constexpr uint64_t ctrl2 = kCtrl2First | kCtrl2Last | kCtrl2CompReq;
+    constexpr uint64_t ctrl3 = (uint64_t)EFA_IO_PROCESSING_HINT_BURST_PPS_SENSITIVE & EFA_IO_TX_META_DESC_PROCESSING_HINTS_MASK;
+
+    w[0] = (reqId & 0xFFFFull) | (ctrl1 << 16) | (ctrl2 << 24) | ((uint64_t)qpn << 32);
+    w[1] = ((uint64_t)ah << 32) | (ctrl3 << 48);
+    w[2] = (uint64_t)qkey;
+    w[3] = reqId & ~0xFFFFull;   /* req_id_ex.w[0..3) at bytes 26..32 */
+    w[4] = (uint64_t)dstRkey << 32;
+    w[5] = dstAddr;
+#pragma unroll
+    for (uint32_t i = 6; i < Words; i++) w[i] = 0;
+  }
+
+  /* One SGE: meta.length = 1 (SGL entry count), remote and local lengths = bytes. */
+  NCCL_DEVICE_INLINE void setSge(uint32_t lkey, uint64_t addr, uint32_t bytes) {
+    w[0] |= 1ull << 48;
+    w[4] |= (uint64_t)bytes;
+    w[6] = (uint64_t)bytes | ((uint64_t)(lkey & EFA_IO_TX_BUF_DESC_LKEY_MASK) << 32);
+    w[7] = addr;
+  }
+
+  /* Inline RDMA-write payload of <= 8 bytes at byte 48 (128B WQE only; the 64B
+   * WQE has no RDMA-write inline form, which EfaCudaWrBuilder reports as -EINVAL). */
+  template <typename T>
+  NCCL_DEVICE_INLINE void setInline(T value) {
+    static_assert(sizeof(T) <= 8, "inline payload must fit one word");
+    if NCCL_IF_CONSTEXPR (WqeBytes == 128u) {
+      uint64_t raw = 0;
+      memcpy(&raw, &value, sizeof(T));
+      w[0] |= (kCtrl1InlineMsg << 16) | ((uint64_t)sizeof(T) << 48);
+      w[4] |= (uint64_t)sizeof(T);
+      w[6] = raw;
+    } else {
+      assert(false && "EFA GDA: RDMA write inline requires the 128-byte WQE");
+      (void)value;
+    }
+  }
+
+  NCCL_DEVICE_INLINE void setPhase(uint32_t phase) {
+    w[0] |= ((uint64_t)phase & kCtrl2Phase) << 24;
+  }
+
+  /* Store the image to its SQ slot with relaxed system-scope MMIO stores in
+   * ascending address order, straight from registers. No fence; caller publishes. */
+  NCCL_DEVICE_INLINE void storeMmio(uint64_t dstAddr) const {
+#pragma unroll
+    for (uint32_t i = 0; i < Words; i++) {
+      asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
+                   :
+                   : "l"(dstAddr + i * 8u), "l"(w[i])
+                   : "memory");
+    }
+  }
+};
+
 /* ── RDMA payload encoders ───────────────────────────────────────── */
 
 /* Put, signal, and Get operations transfer their payload through an SGE. */
@@ -270,6 +422,11 @@ struct RdmaSgeEncoder {
     int ret = wr.set_sge(lkey, addr, bytes);
     assert(ret == 0 && "EFA GDA: failed to encode RDMA SGE");
     (void)ret;
+  }
+
+  template <uint32_t WqeBytes>
+  NCCL_DEVICE_INLINE void encodeRegs(EfaGdaWqeRegs<WqeBytes>& regs) {
+    regs.setSge(lkey, addr, bytes);
   }
 };
 
@@ -285,7 +442,26 @@ struct PutValuePayloadEncoder {
     assert(ret == 0 && "EFA GDA: failed to encode inline PutValue");
     (void)ret;
   }
+
+  template <uint32_t WqeBytes>
+  NCCL_DEVICE_INLINE void encodeRegs(EfaGdaWqeRegs<WqeBytes>& regs) {
+    regs.setInline(srcVal);
+  }
 };
+
+/* Register-build member write: build the WQE image in registers for a
+ * compile-time WQE size, patch the phase bit, and store it to the slot. reqId
+ * is the (peer, pseq) request id the completion echoes back. */
+template <efaGdaRdmaOp op, uint32_t WqeBytes, typename PayloadEncoder>
+NCCL_DEVICE_INLINE static void writeWqeRegs(uint64_t slotAddr, uint32_t wqe_phase, uint64_t reqId, uint16_t ah,
+                                            uint16_t qpn, uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
+                                            PayloadEncoder& payloadEncoder) {
+  EfaGdaWqeRegs<WqeBytes> regs;
+  regs.template initRdma<op>(reqId, ah, qpn, qkey, dstAddr, dstRkey);
+  payloadEncoder.encodeRegs(regs);
+  regs.setPhase(wqe_phase);
+  regs.storeMmio(slotAddr);
+}
 
 /* ── postRdmaOp: admission gate + shared post path for Put, PutValue and Get ── */
 
@@ -303,6 +479,7 @@ struct PutValuePayloadEncoder {
  * the per-peer and per-context backpressure and counts. */
 template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE,
           bool SingleIssuerPerQp = (NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP != 0),
+          bool RegisterBuild = (NCCL_GIN_EFA_GDA_WQE_REGISTER_BUILD != 0),
           typename PayloadEncoder>
 NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
                                           nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint32_t peerIdx, uint16_t ah,
@@ -377,9 +554,11 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
   efa_cuda_qp* qp = (efa_cuda_qp*)ep->qp;
   uint64_t* submitted_count_ptr = &ep->submitted_count;
 
-  /* WQE staging buffer. Always the 128B form: the builder zeroes and the MMIO
-   * loop copies only the QP's negotiated wqe_size, but sizing the storage to
-   * the larger layout keeps one buffer valid for both 64B and 128B QPs. */
+  /* WQE staging buffer (builder path only). Always the 128B form: the builder
+   * zeroes and the MMIO loop copies only the QP's negotiated wqe_size, but
+   * sizing the storage to the larger layout keeps one buffer valid for both 64B
+   * and 128B QPs. Under RegisterBuild the image is assembled in registers
+   * instead (see EfaGdaWqeRegs) and none of this is emitted. */
   efa_io_tx_wqe_128 wr_storage;
   uint16_t wqe_size = qp->sq.wr_ctx.wqe_size;
 
@@ -394,21 +573,23 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
   const uint64_t wrReqId =
     (((uint64_t)peerIdx & EFA_GDA_PEER_MASK) << EFA_GDA_PSEQ_BITS) | ((uint64_t)pseq & EFA_GDA_PSEQ_MASK);
   EfaCudaWrBuilder wr(&qp->sq.wr_ctx, (uint8_t*)&wr_storage);
-  /* The opcode is the only thing that differs between a Put and a Get here: both
-   * carry the RDMA address pair (dstAddr, dstRkey) and the local buffer in the SGE,
-   * and the opcode decides which way the bytes move. A read therefore arrives with
-   * the REMOTE source in the RDMA pair and the LOCAL destination in the SGE. */
-  if NCCL_IF_CONSTEXPR (op == EFA_GDA_RDMA_READ) {
-    wr.init_rdma_read(wrReqId, dstRkey, dstAddr);
-  } else {
-    wr.init_rdma_write(wrReqId, dstRkey, dstAddr);
+  if NCCL_IF_CONSTEXPR (!RegisterBuild) {
+    /* The opcode is the only thing that differs between a Put and a Get here: both
+     * carry the RDMA address pair (dstAddr, dstRkey) and the local buffer in the SGE,
+     * and the opcode decides which way the bytes move. A read therefore arrives with
+     * the REMOTE source in the RDMA pair and the LOCAL destination in the SGE. */
+    if NCCL_IF_CONSTEXPR (op == EFA_GDA_RDMA_READ) {
+      wr.init_rdma_read(wrReqId, dstRkey, dstAddr);
+    } else {
+      wr.init_rdma_write(wrReqId, dstRkey, dstAddr);
+    }
+    wr.set_remote(ah, (uint32_t)qpn, qkey);
+    /* Tag the WQE as PPS-sensitive. GIN puts are small, high-rate writes, so
+     * ask the NIC to optimize for packets-per-second (burst PPS) rather than
+     * bandwidth. This sets the PROCESSING_HINTS field in the WQE meta
+     * descriptor (ctrl3); it is a hint, so the device may ignore it. */
+    wr.set_processing_hints(EFA_CUDA_PROCESSING_HINT_BURST_PPS_SENSITIVE);
   }
-  wr.set_remote(ah, (uint32_t)qpn, qkey);
-  /* Tag the WQE as PPS-sensitive. GIN puts are small, high-rate writes, so
-   * ask the NIC to optimize for packets-per-second (burst PPS) rather than
-   * bandwidth. This sets the PROCESSING_HINTS field in the WQE meta
-   * descriptor (ctrl3); it is a hint, so the device may ignore it. */
-  wr.set_processing_hints(EFA_CUDA_PROCESSING_HINT_BURST_PPS_SENSITIVE);
 
   /* Sliding-window SQ post with warp coalescing (Stage 2).
    *
@@ -509,24 +690,34 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
     /* Members in this window write their own WQE into their slot. */
     if (my_idx >= chunk_start && my_idx < chunk_start + chunk_size) {
       uint32_t my_slot = chunk_base + (uint32_t)(my_idx - chunk_start);
-
-      payloadEncoder.encode(wr);
-
       uint32_t sq_idx = my_slot & qp->sq.wq.queue_mask;
-      int wqe_phase = (int)((my_slot >> qp->sq.wq.queue_size_shift) & 1u);
-      wr_storage.meta.ctrl2 = (wr_storage.meta.ctrl2 & ~(uint8_t)1u) | ((uint8_t)wqe_phase & (uint8_t)1u);
-      uint64_t* src = (uint64_t*)&wr_storage;
+      uint32_t wqe_phase = (my_slot >> qp->sq.wq.queue_size_shift) & 1u;
       uint64_t* dst = (uint64_t*)(qp->sq.wq.buf + sq_idx * wqe_size);
-      /* One final system-scope fence publishes the complete WQE after these
-       * relaxed MMIO stores. */
-      uint64_t dstAddr = (uint64_t)__cvta_generic_to_global(dst);
-      uint32_t num_words = wqe_size / (uint32_t)sizeof(uint64_t);
-      for (uint32_t i = 0; i < num_words; i++) {
-        uint64_t value = src[i];
-        asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
-                     :
-                     : "l"(dstAddr + i * sizeof(uint64_t)), "l"(value)
-                     : "memory");
+      uint64_t slotAddr = (uint64_t)__cvta_generic_to_global(dst);
+
+      if NCCL_IF_CONSTEXPR (RegisterBuild) {
+        /* wqe_size is negotiated per QP and is 64 or 128. Branch once so the
+         * image size is a compile-time constant and the words stay in registers. */
+        if (wqe_size == 64u) {
+          writeWqeRegs<op, 64u>(slotAddr, wqe_phase, wrReqId, ah, qpn, qkey, dstAddr, dstRkey, payloadEncoder);
+        } else {
+          writeWqeRegs<op, 128u>(slotAddr, wqe_phase, wrReqId, ah, qpn, qkey, dstAddr, dstRkey, payloadEncoder);
+        }
+      } else {
+        payloadEncoder.encode(wr);
+
+        wr_storage.meta.ctrl2 = (wr_storage.meta.ctrl2 & ~(uint8_t)1u) | ((uint8_t)wqe_phase & (uint8_t)1u);
+        uint64_t* src = (uint64_t*)&wr_storage;
+        /* One final system-scope fence publishes the complete WQE after these
+         * relaxed MMIO stores. */
+        uint32_t num_words = wqe_size / (uint32_t)sizeof(uint64_t);
+        for (uint32_t i = 0; i < num_words; i++) {
+          uint64_t value = src[i];
+          asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
+                       :
+                       : "l"(slotAddr + i * sizeof(uint64_t)), "l"(value)
+                       : "memory");
+        }
       }
       /* Publish this group's WQE writes to system scope so they are visible
        * to the NIC whenever any doorbell rings a slot in this range. */
