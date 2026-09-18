@@ -193,6 +193,34 @@ NCCL_DEVICE_INLINE static ncclResult_t waitPeerCompleted(nccl_ofi_gin_gdaki_dev_
   return ncclSuccess;
 }
 
+/* ── Single-issuer-per-QP specialization ──────────────────────────────
+ *
+ * NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP (build-time, default OFF)
+ *   Asserts, and then exploits, the precondition that exactly ONE thread ever
+ *   posts to a given QP. Under that precondition the post-doorbell system
+ *   fence in ringDoorbell is dead and is omitted, removing one MEMBAR.ALL.SYS
+ *   per put.
+ *
+ *   Why it is dead. The post-doorbell fence exists only to order this thread's
+ *   doorbell MMIO write before the release-stores that hand the QP off
+ *   (dbrung_ref / base_ref), so that a LATER group's higher doorbell value
+ *   cannot overtake this one and make the NIC observe a non-monotonic producer
+ *   index. With one issuing thread there is no later group and no handoff to
+ *   order against. Successive doorbell writes from one thread go to the SAME
+ *   address, and PTX guarantees mmio writes are always performed, never
+ *   combined, and that same-address writes follow program order in coherence
+ *   order -- with the NIC in scope, since these are .sys. So monotonicity holds
+ *   with no fence. Publish-before-ring is still enforced per put by the
+ *   pre-doorbell WQE fence, which is NOT removed.
+ *
+ *   The precondition is not checked on the device: with more than one poster
+ *   per QP the removed fence is NOT dead and doorbell monotonicity across
+ *   groups is no longer guaranteed. The caller must guarantee one QP per
+ *   issuing thread at setup time. */
+#ifndef NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP
+#define NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP 0
+#endif
+
 /* ── ringDoorbell: shared doorbell-ring used by the post-path ring sites ─
 
  * Rings the SQ doorbell to `target`, then advances the bookkeeping cursors:
@@ -211,16 +239,21 @@ NCCL_DEVICE_INLINE static ncclResult_t waitPeerCompleted(nccl_ofi_gin_gdaki_dev_
  * Only a post-doorbell fence is emitted (to order the doorbell MMIO write).
  * A pre-doorbell publish fence would be useless: __threadfence_system()
  * orders only the calling thread's own writes, and the WQEs being rung were
- * written by other threads. */
-template <ncclGinResourceSharingMode mode>
+ * written by other threads.
+ *
+ * Under SingleIssuerPerQp the post-doorbell fence is omitted; see the
+ * soundness argument at NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP above. */
+template <ncclGinResourceSharingMode mode, bool SingleIssuerPerQp = false>
 NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted_count_ptr,
                                             cuda::atomic_ref<uint32_t, ncclGinScope<mode>>& dbrung_ref,
                                             uint32_t db_rung, uint32_t target) {
   uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
   asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
-  /* Order the doorbell MMIO write. Use acq_rel (MEMBAR.ALL.SYS) instead of
-   * __threadfence_system (MEMBAR.SC.SYS). */
-  cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+  if NCCL_IF_CONSTEXPR (!SingleIssuerPerQp) {
+    /* Order the doorbell MMIO write. Use acq_rel (MEMBAR.ALL.SYS) instead of
+     * __threadfence_system (MEMBAR.SC.SYS). */
+    cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+  }
   scopedAtomicAdd<ncclGinScope<mode>, cuda::memory_order_relaxed>(submitted_count_ptr, (uint64_t)(target - db_rung));
   dbrung_ref.store(target, cuda::memory_order_release);
 }
@@ -268,7 +301,9 @@ struct PutValuePayloadEncoder {
  *
  * `dev` and `peerIdx` identify the target peer: they drive req_id stamping and
  * the per-peer and per-context backpressure and counts. */
-template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE, typename PayloadEncoder>
+template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE,
+          bool SingleIssuerPerQp = (NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP != 0),
+          typename PayloadEncoder>
 NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
                                           nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint32_t peerIdx, uint16_t ah,
                                           uint16_t qpn, uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
@@ -464,7 +499,7 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
         if (base_ref.load(cuda::memory_order_acquire) == chunk_base) {
           uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
           if (chunk_base != db_rung) {   /* deferred, already-written batch */
-            ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_base);
+            ringDoorbell<mode, SingleIssuerPerQp>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_base);
           }
         }
       }
@@ -514,7 +549,7 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
       uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
       bool must_ring = (!aggregate) || (chunk_next - db_rung >= max_batch);
       if (must_ring) {
-        ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_next);
+        ringDoorbell<mode, SingleIssuerPerQp>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_next);
       } else {
         /* Publish this group's WQE writes to system scope before handing off,
          * so they are visible to the NIC whenever any doorbell (this group's or
