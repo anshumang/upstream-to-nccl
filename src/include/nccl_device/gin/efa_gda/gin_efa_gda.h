@@ -288,6 +288,64 @@ struct EfaGdaPostGroups<true> {
   NCCL_DEVICE_INLINE EfaGdaSoloGroup qp(efa_cuda_qp*) const { return EfaGdaSoloGroup{}; }
 };
 
+/* ── Attribution-only experiment selectors (NCCLOFI-1945) ─────────────
+ *
+ * These deliberately break the transport to isolate the cost of what remains.
+ * A binary built with any of them does NOT transmit and must be run with a
+ * harness that never waits for a completion. Never ship.
+ *
+ *   EXPERIMENT_NO_FENCE_A   remove the pre-doorbell WQE-publish fence (both the
+ *                           per-put fence after the WQE stores and the
+ *                           deferred-path publish fence).
+ *   EXPERIMENT_NO_DOORBELL  remove only the doorbell store and every poll that
+ *                           could never be satisfied without it: the
+ *                           NIC-counter backpressure poll and the two admission
+ *                           spins on host-advanced counts. The WQE body stores
+ *                           to the SQ aperture remain; the NIC never consumes
+ *                           the written slots.
+ *   EXPERIMENT_NO_MMIO      remove the WQE body stores as well (implies
+ *                           NO_DOORBELL).
+ *   EXPERIMENT_NO_ATOMICS   additionally replace the producer atomics (admission
+ *                           counts, SQ reserve, window wait, rendezvous, handoff,
+ *                           submitted_count) with plain per-thread accesses and
+ *                           skip the leader's ring/handoff block entirely;
+ *                           requires SINGLE_ISSUER_PER_QP and NO_MMIO.
+ *   EXPERIMENT_NO_GROUPS    run admission and posting as a solo lane: no
+ *                           coalesced_threads / labeled_partition, shuffle or
+ *                           group syncs (the same solo groups the single-owner
+ *                           path uses); requires SINGLE_ISSUER_PER_QP. */
+#ifndef NCCL_GIN_EFA_GDA_EXPERIMENT_NO_FENCE_A
+#define NCCL_GIN_EFA_GDA_EXPERIMENT_NO_FENCE_A 0
+#endif
+#ifndef NCCL_GIN_EFA_GDA_EXPERIMENT_NO_DOORBELL
+#define NCCL_GIN_EFA_GDA_EXPERIMENT_NO_DOORBELL 0
+#endif
+#ifndef NCCL_GIN_EFA_GDA_EXPERIMENT_NO_MMIO
+#define NCCL_GIN_EFA_GDA_EXPERIMENT_NO_MMIO 0
+#endif
+#ifndef NCCL_GIN_EFA_GDA_EXPERIMENT_NO_ATOMICS
+#define NCCL_GIN_EFA_GDA_EXPERIMENT_NO_ATOMICS 0
+#endif
+#ifndef NCCL_GIN_EFA_GDA_EXPERIMENT_NO_GROUPS
+#define NCCL_GIN_EFA_GDA_EXPERIMENT_NO_GROUPS 0
+#endif
+#if NCCL_GIN_EFA_GDA_EXPERIMENT_NO_GROUPS && !NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP
+#error "EXPERIMENT_NO_GROUPS requires SINGLE_ISSUER_PER_QP"
+#endif
+#if NCCL_GIN_EFA_GDA_EXPERIMENT_NO_ATOMICS && \
+    !(NCCL_GIN_EFA_GDA_SINGLE_ISSUER_PER_QP && NCCL_GIN_EFA_GDA_EXPERIMENT_NO_MMIO)
+#error "EXPERIMENT_NO_ATOMICS requires SINGLE_ISSUER_PER_QP and EXPERIMENT_NO_MMIO"
+#endif
+
+namespace {
+constexpr bool kExpNoFenceA = NCCL_GIN_EFA_GDA_EXPERIMENT_NO_FENCE_A != 0;
+constexpr bool kExpNoMmio = NCCL_GIN_EFA_GDA_EXPERIMENT_NO_MMIO != 0;
+/* True whenever the doorbell is never rung, so no NIC- or host-fed count can advance. */
+constexpr bool kExpNoDoorbell = (NCCL_GIN_EFA_GDA_EXPERIMENT_NO_DOORBELL != 0) || kExpNoMmio;
+constexpr bool kExpNoAtomics = NCCL_GIN_EFA_GDA_EXPERIMENT_NO_ATOMICS != 0;
+constexpr bool kExpNoGroups = NCCL_GIN_EFA_GDA_EXPERIMENT_NO_GROUPS != 0;
+}  // namespace
+
 /* ── ringDoorbell: shared doorbell-ring used by the post-path ring sites ─
 
  * Rings the SQ doorbell to `target`, then advances the bookkeeping cursors:
@@ -314,8 +372,10 @@ template <ncclGinResourceSharingMode mode, bool SingleIssuerPerQp = false>
 NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted_count_ptr,
                                             cuda::atomic_ref<uint32_t, ncclGinScope<mode>>& dbrung_ref,
                                             uint32_t db_rung, uint32_t target) {
-  uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
-  asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
+  if NCCL_IF_CONSTEXPR (!kExpNoDoorbell) {
+    uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
+    asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
+  }
   if NCCL_IF_CONSTEXPR (!SingleIssuerPerQp) {
     /* Order the doorbell MMIO write. Use acq_rel (MEMBAR.ALL.SYS) instead of
      * __threadfence_system (MEMBAR.SC.SYS). */
@@ -330,8 +390,10 @@ NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted
  * writes to the same MMIO address stay in program order at system scope. */
 NCCL_DEVICE_INLINE static void ringDoorbellSingleOwner(efa_cuda_qp* qp, uint64_t* submitted_count_ptr,
                                                         uint32_t db_rung, uint32_t target) {
-  uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
-  asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
+  if NCCL_IF_CONSTEXPR (!kExpNoDoorbell) {
+    uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
+    asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
+  }
   *submitted_count_ptr += (uint64_t)(target - db_rung);
   qp->sq.wq.wqes_posted = target;
 }
@@ -537,7 +599,9 @@ NCCL_DEVICE_INLINE static void writeWqeRegs(uint64_t slotAddr, uint32_t wqe_phas
   regs.template initRdma<op>(reqId, ah, qpn, qkey, dstAddr, dstRkey);
   payloadEncoder.encodeRegs(regs);
   regs.setPhase(wqe_phase);
-  regs.storeMmio(slotAddr);
+  if NCCL_IF_CONSTEXPR (!kExpNoMmio) {
+    regs.storeMmio(slotAddr);
+  }
 }
 
 /* ── postRdmaOp: admission gate + shared post path for Put, PutValue and Get ── */
@@ -580,14 +644,14 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
    * bounds the un-rung depth, so the completions a leader waits for always reach
    * the NIC without help from any lane waiting here. This needs
    * max_batch + 32 < peer_window, which the plugin checks at context setup. */
-  EfaGdaPostGroups<SingleOwner> groups(dev, peerIdx);
+  EfaGdaPostGroups<SingleOwner || kExpNoGroups> groups(dev, peerIdx);
   auto& active = groups.active;
   auto& peerGroup = groups.peer;
 
   uint32_t blockSize = (uint32_t)peerGroup.num_threads();
   uint32_t blockBase = 0;
   if (peerGroup.thread_rank() == 0) {
-    if NCCL_IF_CONSTEXPR (SingleOwner) {
+    if NCCL_IF_CONSTEXPR (SingleOwner || kExpNoAtomics) {
       /* Exclusive owner: plain read-modify-write on the producer count. */
       blockBase = dev->submitted_count_per_peer[peerIdx];
       dev->submitted_count_per_peer[peerIdx] = blockBase + blockSize;
@@ -605,9 +669,13 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
      * peer_window of the block's claimed count, which keeps the host's per-peer
      * completion bitmap a fixed size and every live position in it distinct.
      * The prefix only advances, so once the block fits it keeps fitting. */
-    while ((uint32_t)(peerTop - scopedAtomicLoad<cuda::thread_scope_system, cuda::memory_order_acquire>(
-                                  &dev->ordered_completed_count_per_peer[peerIdx])) > dev->peer_window) {
-      /* spin */
+    /* Without a doorbell the host never advances either count, so both
+     * admission spins are compiled out whenever the doorbell is. */
+    if NCCL_IF_CONSTEXPR (!kExpNoDoorbell) {
+      while ((uint32_t)(peerTop - scopedAtomicLoad<cuda::thread_scope_system, cuda::memory_order_acquire>(
+                                    &dev->ordered_completed_count_per_peer[peerIdx])) > dev->peer_window) {
+        /* spin */
+      }
     }
       /* The block claims its span of the context's shared CQ with one atomic, then
      * waits until the host has read enough entries for that span to fit within
@@ -616,7 +684,7 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
      * all passing the same reading of an unclaimed counter. The host only advances
      * completed_count_per_ctx, so once the span fits it keeps fitting. */
     uint64_t cqTop;
-    if NCCL_IF_CONSTEXPR (SingleOwner) {
+    if NCCL_IF_CONSTEXPR (SingleOwner || kExpNoAtomics) {
       cqTop = *dev->submitted_count_per_ctx + (uint64_t)blockSize;
       *dev->submitted_count_per_ctx = cqTop;
     } else {
@@ -624,10 +692,12 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
                                                                                    (uint64_t)blockSize) +
               (uint64_t)blockSize;
     }
-    while (cqTop -
-             scopedAtomicLoad<cuda::thread_scope_system, cuda::memory_order_relaxed>(dev->completed_count_per_ctx) >
-           (uint64_t)dev->cq_depth) {
-        /* spin */
+    if NCCL_IF_CONSTEXPR (!kExpNoDoorbell) {
+      while (cqTop -
+               scopedAtomicLoad<cuda::thread_scope_system, cuda::memory_order_relaxed>(dev->completed_count_per_ctx) >
+             (uint64_t)dev->cq_depth) {
+          /* spin */
+      }
     }
   }
   /* The members wait for their leader's admission here, and the peer subgroups
@@ -732,7 +802,8 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
   /* Leader reserves the whole group's contiguous slot range. */
   uint32_t base = 0;
   if (is_leader) {
-    if NCCL_IF_CONSTEXPR (SingleOwner) {
+    if NCCL_IF_CONSTEXPR (SingleOwner || kExpNoAtomics) {
+      /* Single poster: a plain read-modify-write is race-free. */
       base = qp->sq.wq.pc;
       qp->sq.wq.pc = base + (uint32_t)group_size;
     } else {
@@ -773,7 +844,7 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
         if (chunk_next - db_rung > max_batch && chunk_base != db_rung) {
           ringDoorbellSingleOwner(qp, submitted_count_ptr, db_rung, chunk_base);
         }
-      } else {
+      } else if NCCL_IF_CONSTEXPR (!kExpNoAtomics) {
         cuda::atomic_ref<uint32_t, ncclGinScope<mode>> base_ref(qp->sq.wq.wqes_completed);
         cuda::atomic_ref<uint32_t, ncclGinScope<mode>> dbrung_ref(qp->sq.wq.wqes_posted);
         while (chunk_next - dbrung_ref.load(cuda::memory_order_relaxed) > max_batch) {
@@ -812,21 +883,25 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
         /* One final system-scope fence publishes the complete WQE after these
          * relaxed MMIO stores. */
         uint32_t num_words = wqe_size / (uint32_t)sizeof(uint64_t);
-        for (uint32_t i = 0; i < num_words; i++) {
-          uint64_t value = src[i];
-          asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
-                       :
-                       : "l"(slotAddr + i * sizeof(uint64_t)), "l"(value)
-                       : "memory");
+        if NCCL_IF_CONSTEXPR (!kExpNoMmio) {
+          for (uint32_t i = 0; i < num_words; i++) {
+            uint64_t value = src[i];
+            asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;"
+                         :
+                         : "l"(slotAddr + i * sizeof(uint64_t)), "l"(value)
+                         : "memory");
+          }
         }
       }
       /* Publish this group's WQE writes to system scope so they are visible
        * to the NIC whenever any doorbell rings a slot in this range. */
-      cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+      if NCCL_IF_CONSTEXPR (!kExpNoFenceA) {
+        cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+      }
     }
     qpGroup.sync();   /* all members' WQE writes for this chunk are done */
 
-    if (is_leader) {
+    if (is_leader && !kExpNoAtomics) {
       if NCCL_IF_CONSTEXPR (SingleOwner) {
         /* No rendezvous: the owner always holds the turn. Ring unless
          * aggregating, or if deferring would exceed the staging limit. The
@@ -863,7 +938,9 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_handle* dev,
            * orders only the calling thread's writes, and the handoff (base_ref)
            * is device/block scope, so a later thread's fence cannot publish this
            * group's writes for it. Runs only on the defer path. */
-          cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+          if NCCL_IF_CONSTEXPR (!kExpNoFenceA) {
+            cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+          }
         }
         base_ref.store(chunk_next, cuda::memory_order_release);   /* hand off to next group */
       }
