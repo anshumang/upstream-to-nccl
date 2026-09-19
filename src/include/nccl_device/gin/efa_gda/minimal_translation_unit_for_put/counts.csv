@@ -1,0 +1,11 @@
+base,branch,arm,arch,flags,membar_sys,membar_gpu,membar_cta,errbar,cctl,st_mmio_sys,st_strong_sys,st_strong_gpu,st_global_weak,ld_strong_sys,ld_strong_gpu,ld_global_weak,stl,ldl,shared,ldc,atom_sys,atom_gpu,red_sys,red_gpu,atoms_shared,match,shfl,vote,warpsync,bar_sync,bssy_bsync,redux,nanosleep_yield,bra,exit,other,instructions
+f927d56a,all,baseline,sm90,,6,6,12,24,12,66,0,6,6,6,10,72,124,182,54,44,0,14,0,0,6,26,36,26,26,0,170,26,38,200,2,1072,2272
+f927d56a,all,baseline,sm100,,6,6,12,24,12,66,0,6,6,6,10,74,124,182,54,45,0,14,0,0,6,26,36,26,26,0,178,26,36,215,2,880,2104
+f927d56a,all,onefence,sm90,SINGLE_ISSUER_PER_QP=1,2,6,8,16,8,66,0,6,6,6,10,72,124,182,38,44,0,14,0,0,6,26,36,26,26,0,170,26,38,200,2,1068,2232
+f927d56a,all,onefence,sm100,SINGLE_ISSUER_PER_QP=1,2,6,8,16,8,66,0,6,6,6,10,74,124,182,38,45,0,14,0,0,6,26,36,26,26,0,178,26,36,215,2,876,2064
+f927d56a,all,reg,sm90,WQE_REGISTER_BUILD=1,6,6,12,24,12,52,0,6,6,6,10,66,30,110,54,36,0,14,0,0,6,26,36,26,26,0,124,26,34,150,2,694,1600
+f927d56a,all,reg,sm100,WQE_REGISTER_BUILD=1,6,6,12,24,12,52,0,6,6,6,10,68,30,110,54,37,0,14,0,0,6,26,36,26,26,0,132,26,34,161,2,680,1608
+f927d56a,all,singleowner,sm90,SINGLE_OWNER_FAST_PATH=1,2,0,2,4,5,66,0,0,14,5,0,81,94,100,8,39,0,0,0,0,0,0,0,0,0,0,70,0,16,76,1,657,1240
+f927d56a,all,singleowner,sm100,SINGLE_OWNER_FAST_PATH=1,2,0,2,4,5,66,0,0,14,5,0,83,94,100,8,39,0,0,0,0,0,0,0,0,0,0,68,0,13,78,1,434,1016
+f927d56a,all,all,sm90,SINGLE_ISSUER_PER_QP=1 WQE_REGISTER_BUILD=1 SINGLE_OWNER_FAST_PATH=1,2,0,2,4,5,52,0,0,14,5,0,77,0,28,8,31,0,0,0,0,0,0,0,0,0,0,26,0,12,26,1,291,584
+f927d56a,all,all,sm100,SINGLE_ISSUER_PER_QP=1 WQE_REGISTER_BUILD=1 SINGLE_OWNER_FAST_PATH=1,2,0,2,4,5,52,0,0,14,5,0,77,0,28,8,30,0,0,0,0,0,0,0,0,0,0,20,0,11,22,1,271,552
