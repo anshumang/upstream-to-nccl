@@ -1,0 +1,124 @@
+		Function : _Z16probe_put_kernel9ProbeArgs
+	.headerflags	@"EF_CUDA_SM90 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM90)"
+        LDC R1, c[0x0][0x28] ;
+        LDC.U8 R4, c[0x0][0x270] ;
+        ULDC.64 UR36, c[0x0][0x208] ;
+        ULDC UR4, c[0x0][0x330] ;
+        LDC R6, c[0x0][0x32c] ;
+        PRMT R2, R4, 0x9910, RZ ;
+        ISETP.NE.AND P0, PT, R2, 0x3, PT ;
+        IMAD.WIDE.U32 R8, R6, -0x55555555, RZ ;
+        @P0 VIADD R0, R4.reuse, 0xffffffff ;
+        @!P0 SHF.R.U32.HI R3, RZ, 0x1, R9 ;
+        @P0 VIADD R23, R4, 0xffffffff ;
+        @P0 ISETP.NE.AND P1, PT, R2, 0x4, PT ;
+        @P0 LOP3.LUT R0, R0, R6, RZ, 0xc0, !PT ;
+        @!P0 IMAD R0, R3, -0x3, R6 ;
+        @P0 SEL R23, R23, 0x2, P1 ;
+        IMAD.SHL.U32 R0, R0, 0x8, RZ ;
+        @P0 SHF.R.S32.HI R23, RZ, R23, R6 ;
+        @!P0 SHF.R.U32.HI R23, RZ, 0x1, R9 ;
+        LOP3.LUT R18, R0, 0x7f8, RZ, 0xc0, !PT ;
+        LDC.64 R18, c[0x0][R18+0x278] ;
+        IMAD.WIDE R16, R23, 0xf0, R18 ;
+        LDG.E R0, desc[UR36][R16.64+0xb4] ;
+        SHF.R.S32.HI R22, RZ, 0x1f, R23 ;
+        ISETP.GT.AND P0, PT, R0, UR4, PT ;
+        @P0 BRA L0 ;
+        MOV R2, 0x0 ;
+        ULDC.64 UR4, c[0x4][0x20] ;
+        ULDC.64 UR6, c[0x4][0x8] ;
+        IMAD.U32 R4, RZ, RZ, UR4 ;
+        IMAD.U32 R5, RZ, RZ, UR5 ;
+        LDC.64 R2, c[0x4][R2] ;
+        ULDC.64 UR4, c[0x4][0x18] ;
+        IMAD.U32 R10, RZ, RZ, UR6 ;
+        IMAD.U32 R6, RZ, RZ, UR4 ;
+        IMAD.U32 R7, RZ, RZ, UR5 ;
+        IMAD.U32 R11, RZ, RZ, UR7 ;
+        IMAD.MOV.U32 R8, RZ, RZ, 0x311 ;
+        IMAD.MOV.U32 R12, RZ, RZ, 0x1 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        LEPC R20, 0x290 ;
+        CALL.ABS.NOINC R2 ;
+L0:
+        LDC.64 R2, c[0x0][0x320] ;
+        ISETP.GE.U32.AND P0, PT, R2, 0x40000001, PT ;
+        ISETP.GE.U32.AND.EX P0, PT, R3, RZ, PT, P0 ;
+        @!P0 BRA L5 ;
+        IADD3 R7, P0, R2, -0x1, RZ ;
+        IMAD.WIDE.U32 R18, R23, 0xf0, R18 ;
+        IADD3.X R0, R3, -0x1, RZ, P0, !PT ;
+        IMAD R11, R22, 0xf0, RZ ;
+        SHF.R.U64 R7, R7, 0x1e, R0.reuse ;
+        SHF.R.U32.HI R9, RZ, 0x1e, R0 ;
+        ISETP.NE.U32.AND P0, PT, R7, RZ, PT ;
+        ISETP.NE.AND.EX P0, PT, R9, RZ, PT, P0 ;
+        @!P0 BRA L2 ;
+        BSSY B0, L2 ;
+        IMAD.MOV.U32 R4, RZ, RZ, RZ ;
+        IMAD.MOV.U32 R6, RZ, RZ, RZ ;
+L1:
+        LDG.E.64 R2, desc[UR36][R16.64] ;
+        LD.E R0, desc[UR36][R2.64+0x28] ;
+        IADD3 R4, P0, R4, 0x1, RZ ;
+        IMAD.X R6, RZ, RZ, R6, P0 ;
+        ISETP.GE.U32.AND P0, PT, R4, R7, PT ;
+        ISETP.GE.U32.AND.EX P0, PT, R6, R9, PT, P0 ;
+        VIADD R5, R0, 0x1 ;
+        ST.E desc[UR36][R2.64+0x28], R5 ;
+        @!P0 BRA L1 ;
+        BSYNC B0 ;
+L2:
+        BSSY B0, L5 ;
+        IMAD.IADD R11, R19, 0x1, R11 ;
+L3:
+        LDG.E.64 R4, desc[UR36][R16.64+0x30] ;
+        IMAD.MOV.U32 R2, RZ, RZ, R18 ;
+        IMAD.MOV.U32 R3, RZ, RZ, R11 ;
+        LD.E.STRONG.GPU R0, desc[UR36][R2.64+0x38] ;
+        QSPC.E.L P0, RZ, [R4] ;
+        @!P0 LD.E.STRONG.SYS R7, desc[UR36][R4.64] ;
+        @!P0 CCTL.IVALL ;
+        YIELD ;
+        @!P0 BRA L4 ;
+        ULDC UR4, c[0x0][0x20] ;
+        VIADD R6, R4, -UR4 ;
+        LDL.U8 R3, [R6+0x1] ;
+        LDL.U8 R5, [R6+0x3] ;
+        LDL.U8 R2, [R6] ;
+        LDL.U8 R4, [R6+0x2] ;
+        NANOSLEEP RZ ;
+        PRMT R3, R3, 0x7604, RZ ;
+        PRMT R5, R5, 0x7604, RZ ;
+        LOP3.LUT R7, R3, 0xffff00ff, R2, 0xf8, !PT ;
+        LOP3.LUT R4, R5, 0xffff00ff, R4, 0xf8, !PT ;
+        PRMT R7, R7, 0x5410, R4 ;
+L4:
+        IMAD.IADD R0, R0, 0x1, -R7 ;
+        LOP3.LUT P0, RZ, R0, 0x7fffffff, RZ, 0xc0, !PT ;
+        @P0 BRA L3 ;
+        BSYNC B0 ;
+L5:
+        LDG.E.64 R16, desc[UR36][R16.64] ;
+        LD.E R0, desc[UR36][R16.64+0x28] ;
+        VIADD R3, R0, 0x1 ;
+        ST.E desc[UR36][R16.64+0x28], R3 ;
+        EXIT ;
+L6:
+        BRA L6;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+		..........
+
+
