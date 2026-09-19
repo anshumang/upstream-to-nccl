@@ -309,7 +309,10 @@ struct ncclGin_BackendMask {
   // Runtime-selected resource sharing mode for this context.
   ncclGinResourceSharingMode resourceSharingMode;
 
-  // Loads GIN context into registers. Each context has one QP per peer.
+  // Loads a GIN context into registers. Each context has one QP per peer.
+  // THREAD requires exclusive ownership of the whole context across all
+  // ncclGin instances until ownership is transferred by external CUDA
+  // synchronization; see ncclGinResourceSharingMode.
   NCCL_DEVICE_INLINE ncclGin_BackendMask(
     ncclDevComm const&, int contextIndex,
     ncclGinResourceSharingMode resourceSharingMode_ = NCCL_GIN_RESOURCE_SHARING_GPU);
