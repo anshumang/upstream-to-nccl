@@ -1,0 +1,5 @@
+base,branch,arm,arch,flags,membar_sys,membar_gpu,membar_cta,errbar,cctl,st_mmio_sys,st_strong_sys,st_strong_gpu,st_global_weak,ld_strong_sys,ld_strong_gpu,ld_global_weak,stl,ldl,shared,ldc,atom_sys,atom_gpu,red_sys,red_gpu,atoms_shared,match,shfl,vote,warpsync,bar_sync,bssy_bsync,redux,nanosleep_yield,bra,exit,other,instructions
+f927d56a,onefence,baseline,sm90,,6,6,12,24,12,66,0,6,6,6,10,72,124,182,54,44,0,14,0,0,6,26,36,26,26,0,170,26,38,200,2,1072,2272
+f927d56a,onefence,baseline,sm100,,6,6,12,24,12,66,0,6,6,6,10,74,124,182,54,45,0,14,0,0,6,26,36,26,26,0,178,26,36,215,2,880,2104
+f927d56a,onefence,onefence,sm90,SINGLE_ISSUER_PER_QP=1,2,6,8,16,8,66,0,6,6,6,10,72,124,182,38,44,0,14,0,0,6,26,36,26,26,0,170,26,38,200,2,1068,2232
+f927d56a,onefence,onefence,sm100,SINGLE_ISSUER_PER_QP=1,2,6,8,16,8,66,0,6,6,6,10,74,124,182,38,45,0,14,0,0,6,26,36,26,26,0,178,26,36,215,2,884,2072
