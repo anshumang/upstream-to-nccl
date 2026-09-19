@@ -97,6 +97,57 @@ NCCL_DEVICE_INLINE static uint64_t hwCounterLoad(uint64_t* ptr) {
   return scopedAtomicLoad<cuda::thread_scope_system, Order>(ptr);
 }
 
+/* ── Single-owner fast path ────────────────────────────────────────────
+ *
+ * NCCL_GIN_EFA_GDA_SINGLE_OWNER_FAST_PATH (build-time, default OFF)
+ *   Selected only for THREAD sharing, whose contract (ncclGinResourceSharingMode)
+ *   is that one thread exclusively owns the whole context, and with it every
+ *   QP, until ownership is transferred by external CUDA synchronization. Under
+ *   that contract the SQ cursors (pc, wqes_completed, wqes_posted,
+ *   submitted_count) have exactly one accessor on the GPU, so their atomics,
+ *   the doorbell-order rendezvous and the handoff release-store are replaced by
+ *   plain sequential updates, and the post-doorbell fence that orders the
+ *   doorbell before the handoff is dropped: there is no handoff, and this
+ *   owner's successive doorbell writes to the same address stay in program
+ *   order at system scope. The same contract makes the warp-level grouping of
+ *   posters by QP (coalesced_threads + labeled_partition, with its shuffle and
+ *   group syncs) provably a group of one, so the owner path posts as a solo
+ *   lane and emits none of those collectives. Counters written by the NIC or
+ *   the host are still read with system-scope atomic loads. CTA and GPU sharing
+ *   are unchanged. */
+#ifndef NCCL_GIN_EFA_GDA_SINGLE_OWNER_FAST_PATH
+#define NCCL_GIN_EFA_GDA_SINGLE_OWNER_FAST_PATH 0
+#endif
+
+template <ncclGinResourceSharingMode mode>
+static constexpr bool efaGdaSingleOwner =
+  NCCL_GIN_EFA_GDA_SINGLE_OWNER_FAST_PATH != 0 && mode == NCCL_GIN_RESOURCE_SHARING_THREAD;
+
+/* Posting group of one: the interface the post path needs from a
+ * cooperative_groups::coalesced_group, for a lane that provably has no peers on
+ * its QP. Every member is a compile-time constant, so nothing is emitted. */
+struct EfaGdaSoloGroup {
+  NCCL_DEVICE_INLINE int thread_rank() const { return 0; }
+  NCCL_DEVICE_INLINE int num_threads() const { return 1; }
+  template <typename T>
+  NCCL_DEVICE_INLINE T shfl(T v, int) const { return v; }
+  NCCL_DEVICE_INLINE void sync() const {}
+};
+
+/* Selects the posting group for postRdmaOp: the lanes converged on this QP
+ * (shared modes), or a solo group (single owner). */
+template <bool Solo>
+struct EfaGdaPostGroup {
+  NCCL_DEVICE_INLINE static cooperative_groups::coalesced_group make(efa_cuda_qp* qp) {
+    cooperative_groups::coalesced_group active = cooperative_groups::coalesced_threads();
+    return cooperative_groups::labeled_partition(active, (unsigned long long)(uintptr_t)qp);
+  }
+};
+template <>
+struct EfaGdaPostGroup<true> {
+  NCCL_DEVICE_INLINE static EfaGdaSoloGroup make(efa_cuda_qp*) { return EfaGdaSoloGroup{}; }
+};
+
 /* ── ringDoorbell: shared doorbell-ring used by the post-path ring sites ─
 
  * Rings the SQ doorbell to `target`, then advances the bookkeeping cursors:
@@ -127,6 +178,17 @@ NCCL_DEVICE_INLINE static void ringDoorbell(efa_cuda_qp* qp, uint64_t* submitted
   cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
   scopedAtomicAdd<ncclGinScope<mode>, cuda::memory_order_relaxed>(submitted_count_ptr, (uint64_t)(target - db_rung));
   dbrung_ref.store(target, cuda::memory_order_release);
+}
+
+/* Single-owner ring: same doorbell write, plain cursor updates, no fence. No
+ * other accessor can observe a handoff, and this owner's successive doorbell
+ * writes to the same MMIO address stay in program order at system scope. */
+NCCL_DEVICE_INLINE static void ringDoorbellSingleOwner(efa_cuda_qp* qp, uint64_t* submitted_count_ptr,
+                                                        uint32_t db_rung, uint32_t target) {
+  uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
+  asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(target) : "memory");
+  *submitted_count_ptr += (uint64_t)(target - db_rung);
+  qp->sq.wq.wqes_posted = target;
 }
 
 /* ── RDMA payload encoders ───────────────────────────────────────── */
@@ -168,7 +230,9 @@ struct PutValuePayloadEncoder {
  *
  * PayloadEncoder runs after this lane's SQ slot is known and either attaches
  * a local SGE or writes inline data into the WQE. */
-template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE, typename PayloadEncoder>
+template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE,
+          bool SingleOwner = efaGdaSingleOwner<mode>,
+          typename PayloadEncoder>
 NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint16_t ah, uint16_t qpn,
                                           uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
                                           PayloadEncoder payloadEncoder, uint32_t optFlags = ncclGinOptFlagsDefault) {
@@ -241,25 +305,29 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_endpoint_handle
    *   - doorbell rendezvous (leader): wait until released == chunk_base
    *     (strict slot order across groups), ring the doorbell, then
    *     advance released to hand off to the next group. */
-  cooperative_groups::coalesced_group active = cooperative_groups::coalesced_threads();
-  auto group = cooperative_groups::labeled_partition(active, (unsigned long long)(uintptr_t)qp);
+  auto group = EfaGdaPostGroup<SingleOwner>::make(qp);
 
   int my_idx = group.thread_rank();
   int group_size = group.num_threads();
   bool is_leader = (my_idx == 0);
   uint32_t max_batch = qp->sq.wq.max_batch;
 
-  cuda::atomic_ref<uint32_t, ncclGinScope<mode>> pc_ref(qp->sq.wq.pc);
-  cuda::atomic_ref<uint32_t, ncclGinScope<mode>> base_ref(qp->sq.wq.wqes_completed);
   /* db_rung reuses the wqes_posted field, which the GIN path does not
-   * otherwise use (zero-initialized by the plugin). */
-  cuda::atomic_ref<uint32_t, ncclGinScope<mode>> dbrung_ref(qp->sq.wq.wqes_posted);
+   * otherwise use (zero-initialized by the plugin). Under SingleOwner the
+   * cursors are plain fields; the shared modes wrap them in atomic_refs at
+   * each use site below. */
   const bool aggregate = (optFlags & ncclGinOptFlagsAggregateRequests) != 0;
 
   /* Leader reserves the whole group's contiguous slot range. */
   uint32_t base = 0;
   if (is_leader) {
-    base = pc_ref.fetch_add((uint32_t)group_size, cuda::memory_order_relaxed);
+    if NCCL_IF_CONSTEXPR (SingleOwner) {
+      base = qp->sq.wq.pc;
+      qp->sq.wq.pc = base + (uint32_t)group_size;
+    } else {
+      cuda::atomic_ref<uint32_t, ncclGinScope<mode>> pc_ref(qp->sq.wq.pc);
+      base = pc_ref.fetch_add((uint32_t)group_size, cuda::memory_order_relaxed);
+    }
   }
   base = group.shfl(base, 0);
 
@@ -288,11 +356,21 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_endpoint_handle
        * <= max_batch, so one doorbell drains it. If we do not yet hold the
        * turn, a lower group does and will either ring (advancing db_rung) or
        * hand off (advancing base_ref); keep checking until our chunk fits. */
-      while (chunk_next - dbrung_ref.load(cuda::memory_order_relaxed) > max_batch) {
-        if (base_ref.load(cuda::memory_order_acquire) == chunk_base) {
-          uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
-          if (chunk_base != db_rung) {   /* deferred, already-written batch */
-            ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_base);
+      if NCCL_IF_CONSTEXPR (SingleOwner) {
+        /* The owner is always the turn-holder; ring the deferred batch itself. */
+        uint32_t db_rung = qp->sq.wq.wqes_posted;
+        if (chunk_next - db_rung > max_batch && chunk_base != db_rung) {
+          ringDoorbellSingleOwner(qp, submitted_count_ptr, db_rung, chunk_base);
+        }
+      } else {
+        cuda::atomic_ref<uint32_t, ncclGinScope<mode>> base_ref(qp->sq.wq.wqes_completed);
+        cuda::atomic_ref<uint32_t, ncclGinScope<mode>> dbrung_ref(qp->sq.wq.wqes_posted);
+        while (chunk_next - dbrung_ref.load(cuda::memory_order_relaxed) > max_batch) {
+          if (base_ref.load(cuda::memory_order_acquire) == chunk_base) {
+            uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
+            if (chunk_base != db_rung) {   /* deferred, already-written batch */
+              ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_base);
+            }
           }
         }
       }
@@ -341,32 +419,46 @@ NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_endpoint_handle
     group.sync();   /* all members' WQE writes for this chunk are done */
 
     if (is_leader) {
-      /* Doorbell-order rendezvous: take the turn in strict slot order. */
-      while (base_ref.load(cuda::memory_order_relaxed) != chunk_base) {
-        /* spin */
-      }
-
-      /* Ring unless aggregating. Force a ring if deferring would leave
-       * more than max_batch un-rung WQEs (db_rung is the last rung slot),
-       * so the EFA staging limit is never exceeded. When we do ring, ring
-       * to chunk_next: it is >= every deferred slot below us (we hold the
-       * turn in slot order), so one doorbell drains the whole contiguous
-       * batch. submitted_count advances by everything since db_rung. */
-      uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
-      bool must_ring = (!aggregate) || (chunk_next - db_rung >= max_batch);
-      if (must_ring) {
-        ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_next);
+      if NCCL_IF_CONSTEXPR (SingleOwner) {
+        /* No rendezvous: the owner always holds the turn. Ring unless
+         * aggregating, or if deferring would exceed the staging limit. The
+         * deferred path needs no publish fence either: the only doorbell that
+         * can ever ring these slots is this owner's, and its WQE stores are
+         * already published per put by the pre-doorbell fence above. */
+        uint32_t db_rung = qp->sq.wq.wqes_posted;
+        bool must_ring = (!aggregate) || (chunk_next - db_rung >= max_batch);
+        if (must_ring) ringDoorbellSingleOwner(qp, submitted_count_ptr, db_rung, chunk_next);
+        qp->sq.wq.wqes_completed = chunk_next;
       } else {
-        /* Publish this group's WQE writes to system scope before handing off,
-         * so they are visible to the NIC whenever any doorbell (this group's or
-         * a later draining group's) rings a slot in this range.
-         * Each group must publish its own writes: __threadfence_system()
-         * orders only the calling thread's writes, and the handoff (base_ref)
-         * is device/block scope, so a later thread's fence cannot publish this
-         * group's writes for it. Runs only on the defer path. */
-        cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+        cuda::atomic_ref<uint32_t, ncclGinScope<mode>> base_ref(qp->sq.wq.wqes_completed);
+        cuda::atomic_ref<uint32_t, ncclGinScope<mode>> dbrung_ref(qp->sq.wq.wqes_posted);
+        /* Doorbell-order rendezvous: take the turn in strict slot order. */
+        while (base_ref.load(cuda::memory_order_relaxed) != chunk_base) {
+          /* spin */
+        }
+
+        /* Ring unless aggregating. Force a ring if deferring would leave
+         * more than max_batch un-rung WQEs (db_rung is the last rung slot),
+         * so the EFA staging limit is never exceeded. When we do ring, ring
+         * to chunk_next: it is >= every deferred slot below us (we hold the
+         * turn in slot order), so one doorbell drains the whole contiguous
+         * batch. submitted_count advances by everything since db_rung. */
+        uint32_t db_rung = dbrung_ref.load(cuda::memory_order_relaxed);
+        bool must_ring = (!aggregate) || (chunk_next - db_rung >= max_batch);
+        if (must_ring) {
+          ringDoorbell<mode>(qp, submitted_count_ptr, dbrung_ref, db_rung, chunk_next);
+        } else {
+          /* Publish this group's WQE writes to system scope before handing off,
+           * so they are visible to the NIC whenever any doorbell (this group's or
+           * a later draining group's) rings a slot in this range.
+           * Each group must publish its own writes: __threadfence_system()
+           * orders only the calling thread's writes, and the handoff (base_ref)
+           * is device/block scope, so a later thread's fence cannot publish this
+           * group's writes for it. Runs only on the defer path. */
+          cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+        }
+        base_ref.store(chunk_next, cuda::memory_order_release);   /* hand off to next group */
       }
-      base_ref.store(chunk_next, cuda::memory_order_release);   /* hand off to next group */
     }
     group.sync();   /* chunk fully posted before the next chunk */
   }
@@ -568,11 +660,19 @@ NCCL_DEVICE_INLINE static void putImplMode(ncclGinCtx ctx, Coop coop, int peer, 
          * completed. That is required for correct signal delivery, even
          * though it also waits on concurrent posters' writes. */
         if (isIndexed || hasCounter) {
-          cuda::atomic_ref<uint64_t, ncclGinScope<mode>> submitted_ref(dev->data.submitted_count);
-          while (((((uint32_t)submitted_ref.load(cuda::memory_order_relaxed)) -
-                   (uint32_t)hwCounterLoad(dev->data.local_cntr_value)) &
-                  EFA_CNTR_MASK) != 0) {
-            /* spin: leading chunks in flight */
+          if NCCL_IF_CONSTEXPR (efaGdaSingleOwner<mode>) {
+            /* Exclusive owner: the plain cursor cannot move under us. */
+            uint32_t target = (uint32_t)dev->data.submitted_count;
+            while (((target - (uint32_t)hwCounterLoad(dev->data.local_cntr_value)) & EFA_CNTR_MASK) != 0) {
+              /* spin: leading chunks in flight */
+            }
+          } else {
+            cuda::atomic_ref<uint64_t, ncclGinScope<mode>> submitted_ref(dev->data.submitted_count);
+            while (((((uint32_t)submitted_ref.load(cuda::memory_order_relaxed)) -
+                     (uint32_t)hwCounterLoad(dev->data.local_cntr_value)) &
+                    EFA_CNTR_MASK) != 0) {
+              /* spin: leading chunks in flight */
+            }
           }
         }
         absSrcAddr += nLeading * cap;
@@ -619,6 +719,11 @@ NCCL_DEVICE_INLINE static void putImpl(ncclGinCtx ctx, Coop coop, int peer, bool
                                        ncclGinDescriptorSmem* descriptor, cuda::thread_scope required,
                                        cuda::thread_scope given, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    putImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes,
+                                                  signal, signalOp, signalOpArg, hasCounter, counterId, hasDescriptor,
+                                                  descriptor, required, given, optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     putImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes, signal,
                                                signalOp, signalOpArg, hasCounter, counterId, hasDescriptor, descriptor,
@@ -693,6 +798,10 @@ template <typename Coop>
 NCCL_DEVICE_INLINE static void getImpl(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t remoteWin, size_t remoteOff,
                                        ncclGinWindow_t localWin, size_t localOff, size_t bytes, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    getImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, remoteWin, remoteOff, localWin, localOff, bytes,
+                                                  optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     getImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, remoteWin, remoteOff, localWin, localOff, bytes,
                                                optFlags);
@@ -781,6 +890,11 @@ NCCL_DEVICE_INLINE static void putValueImpl(ncclGinCtx ctx, Coop coop, int peer,
                                             uint64_t signalOpArg, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
                                             cuda::thread_scope required, cuda::thread_scope given, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    putValueImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, dstWin, dstOff, srcVal, signal, signalOp,
+                                                       signalOpArg, hasDescriptor, descriptor, required, given,
+                                                       optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     putValueImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, dstWin, dstOff, srcVal, signal, signalOp,
                                                     signalOpArg, hasDescriptor, descriptor, required, given, optFlags);
@@ -810,28 +924,38 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplMode(ncclGinCtx ctx, Coop coop, 
 
     /* For each endpoint with outstanding work, spin on the NIC-written
      * FI_WRITE + FI_READ counter until it catches up with submitted_count.
-     * submitted_count is re-read (scoped relaxed atomic load matching the
-     * relaxed bumps from the post path) on every iteration rather than
-     * snapshotted once: another thread may keep posting on this context
-     * while we drain, and completions passing a stale snapshot would leave
-     * the masked difference permanently non-zero. The HW counter is read
-     * with system-scope acquire so the GPU bypasses caches and observes the
-     * latest NIC update through PCIe-coherent memory. */
+     * In the shared modes submitted_count is re-read (scoped relaxed atomic
+     * load matching the relaxed bumps from the post path) on every iteration
+     * rather than snapshotted once: another thread may keep posting on this
+     * context while we drain, and completions passing a stale snapshot would
+     * leave the masked difference permanently non-zero. The exclusive THREAD
+     * owner snapshots its plain cursor once. The HW counter is read with
+     * system-scope acquire so the GPU bypasses caches and observes the latest
+     * NIC update through PCIe-coherent memory. */
     auto wait_for_endpoint = [abortFlag, startCycle,
                               timeoutCycles](nccl_ofi_gin_gdaki_dev_endpoint_handle& ep) -> ncclResult_t {
-      cuda::atomic_ref<uint64_t, ncclGinScope<mode>> target_ref(ep.submitted_count);
-
       /* Drain-to-zero: outstanding = (submitted - completed) reduced to
        * 31 bits, since the NIC FI_WRITE + FI_READ counter wraps at 2^31. Wait until
        * no work is outstanding. Outstanding is bounded by sq_size « 2^31,
        * so the masked difference is exact and cannot be fooled by a
        * counter wrap. */
-      while (((((uint32_t)target_ref.load(cuda::memory_order_relaxed)) - (uint32_t)hwCounterLoad(ep.local_cntr_value)) &
-              EFA_CNTR_MASK) != 0) {
-        if NCCL_IF_CONSTEXPR (HasTimeout) {
-          if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
+      if NCCL_IF_CONSTEXPR (efaGdaSingleOwner<mode>) {
+        uint32_t target = (uint32_t)ep.submitted_count;
+        while (((target - (uint32_t)hwCounterLoad(ep.local_cntr_value)) & EFA_CNTR_MASK) != 0) {
+          if NCCL_IF_CONSTEXPR (HasTimeout) {
+            if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
+          }
+          if (abortFlag && *abortFlag) return ncclInProgress;
         }
-        if (abortFlag && *abortFlag) return ncclInProgress;
+      } else {
+        cuda::atomic_ref<uint64_t, ncclGinScope<mode>> target_ref(ep.submitted_count);
+        while (((((uint32_t)target_ref.load(cuda::memory_order_relaxed)) - (uint32_t)hwCounterLoad(ep.local_cntr_value)) &
+                EFA_CNTR_MASK) != 0) {
+          if NCCL_IF_CONSTEXPR (HasTimeout) {
+            if (clock64() - startCycle >= timeoutCycles) return ncclTimeout;
+          }
+          if (abortFlag && *abortFlag) return ncclInProgress;
+        }
       }
       return ncclSuccess;
     };
@@ -866,6 +990,8 @@ template <bool HasTimeout, typename Coop>
 NCCL_DEVICE_INLINE static ncclResult_t flushImpl(ncclGinCtx ctx, Coop coop, cuda::memory_order ord, uint32_t* abortFlag,
                                                  uint64_t timeoutCycles) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    return flushImplMode<HasTimeout, NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, ord, abortFlag, timeoutCycles);
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     return flushImplMode<HasTimeout, NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, ord, abortFlag, timeoutCycles);
   default:

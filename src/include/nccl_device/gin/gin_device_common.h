@@ -58,11 +58,16 @@ enum ncclGinOptFlags {
    ((NCCL_GIN_EFA_GDA_ENABLE) ? 1u : 0u) << (unsigned)NCCL_NET_DEVICE_GIN_EFA_GDA)
 
 #ifdef __CUDACC__
-// Resource sharing mode for a given ncclGin/ncclGin_C *instance*.
-// This mode is selected at construction time and is carried by the ncclGin
-// object, then copied into ncclGinCtx for each call. It is not stored as
-// persistent per-context state in the communicator (i.e., different ncclGin
-// instantiations that target the same contextIndex may use different modes).
+// Resource sharing mode for a given ncclGin/ncclGin_C instance. The mode is
+// selected at construction time and copied into ncclGinCtx for each call; it is
+// not persistent communicator state. Different instances may target the same
+// context with different modes only when their lifetimes do not overlap.
+//
+// THREAD is an exclusivity promise: until an external CUDA synchronization
+// transfers ownership, no other thread or ncclGin instance may access any state
+// belonging to that context (including its data, PutValue, signal and counter
+// QPs). Violating this promise is invalid usage. CTA and GPU retain the
+// corresponding shared-access semantics.
 enum ncclGinResourceSharingMode : uint8_t {
   NCCL_GIN_RESOURCE_SHARING_GPU = 0,
   NCCL_GIN_RESOURCE_SHARING_CTA = 1,
