@@ -1,0 +1,1893 @@
+		Function : _Z16probe_put_kernel9ProbeArgs
+	.headerflags	@"EF_CUDA_SM90 EF_CUDA_VIRTUAL_SM(EF_CUDA_SM90)"
+        LDC R1, c[0x0][0x28] ;
+        LDC.U8 R23, c[0x0][0x271] ;
+        ULDC.64 UR36, c[0x0][0x208] ;
+        ULDC UR4, c[0x0][0x330] ;
+        VIADD R1, R1, 0xffffff80 ;
+        LDC.64 R4, c[0x0][0x310] ;
+        LDC.64 R2, c[0x0][0x308] ;
+        ISETP.NE.AND P0, PT, R23, RZ, PT ;
+        LDC.U8 R14, c[0x0][0x270] ;
+        LDC R24, c[0x0][0x32c] ;
+        @P0 LDG.E R20, desc[UR36][R4.64+0x50] ;
+        @P0 LDG.E R22, desc[UR36][R2.64+0x50] ;
+        @!P0 LDC.64 R8, c[0x0][0x310] ;
+        @P0 LDG.E.64 R12, desc[UR36][R2.64+0x48] ;
+        @P0 LDG.E.64 R16, desc[UR36][R4.64+0x48] ;
+        PRMT R0, R14, 0x9910, RZ ;
+        ISETP.NE.AND P1, PT, R0, 0x3, PT ;
+        LDG.E R3, desc[UR36][R2.64+0x20] ;
+        IMAD.WIDE.U32 R6, R24, -0x55555555, RZ ;
+        @P1 VIADD R15, R14, 0xffffffff ;
+        @!P1 SHF.R.U32.HI R6, RZ, 0x1, R7 ;
+        @P1 LOP3.LUT R15, R15, R24, RZ, 0xc0, !PT ;
+        @!P1 IMAD R15, R6, -0x3, R24 ;
+        LOP3.LUT R15, R15, 0xff, RZ, 0xc0, !PT ;
+        @P1 ISETP.NE.AND P2, PT, R0, 0x4, PT ;
+        IMAD.SHL.U32 R18, R15, 0x8, RZ ;
+        LDC.64 R18, c[0x0][R18+0x278] ;
+        @P1 VIADD R37, R14, 0xffffffff ;
+        @P1 SEL R37, R37, 0x2, P2 ;
+        @!P0 IMAD.WIDE.U32 R8, R15, 0x8, R8 ;
+        @P1 SHF.R.S32.HI R37, RZ, R37, R24 ;
+        @!P1 SHF.R.U32.HI R37, RZ, 0x1, R7 ;
+        IMAD.WIDE R46, R37, 0x100, R18 ;
+        @P0 SHF.R.S32.HI R6, RZ, 0x1f, R20 ;
+        @P0 IMAD.WIDE.U32 R20, R20, R23, RZ ;
+        @P0 IMAD R11, R6, R23, RZ ;
+        @P0 SHF.R.S32.HI R0, RZ, 0x1f, R22 ;
+        @P0 IMAD.IADD R6, R21, 0x1, R11 ;
+        @!P0 LDC.64 R10, c[0x0][0x308] ;
+        @P0 IMAD R25, R0, R23.reuse, RZ ;
+        @P0 IMAD.WIDE.U32 R22, R22, R23, RZ ;
+        @P0 IMAD.IADD R0, R23, 0x1, R25 ;
+        @P0 IMAD.WIDE.U32 R22, R22, 0x30, R12 ;
+        LDG.E R25, desc[UR36][R4.64+0x20] ;
+        @P0 IMAD.WIDE.U32 R16, R20, 0x30, R16 ;
+        @P0 IMAD R21, R6, 0x30, RZ ;
+        @P0 IMAD R13, R0, 0x30, RZ ;
+        @P0 IMAD.IADD R17, R17, 0x1, R21 ;
+        LDG.E R0, desc[UR36][R46.64+0x94] ;
+        @P0 IMAD.IADD R23, R23, 0x1, R13 ;
+        @P0 IMAD.WIDE.U32 R12, R15, 0x8, R16 ;
+        @P0 IMAD.WIDE.U32 R6, R15.reuse, 0x8, R22 ;
+        LDC.64 R22, c[0x0][0x318] ;
+        @!P0 IMAD.WIDE.U32 R10, R15, 0x8, R10 ;
+        @P0 IMAD.MOV.U32 R28, RZ, RZ, R12 ;
+        @!P0 IADD3 R28, P1, R8, 0x28, RZ ;
+        @P0 IMAD.MOV.U32 R26, RZ, RZ, R6 ;
+        @!P0 IADD3 R26, P2, R10, 0x28, RZ ;
+        @P0 IMAD.MOV.U32 R29, RZ, RZ, R13 ;
+        @P0 IMAD.MOV.U32 R27, RZ, RZ, R7 ;
+        @!P0 IMAD.X R29, RZ, RZ, R9, P1 ;
+        LDC R7, c[0x0][0x2ac] ;
+        @!P0 IMAD.X R27, RZ, RZ, R11, P2 ;
+        LD.E.64 R28, desc[UR36][R28.64] ;
+        LD.E.64 R26, desc[UR36][R26.64] ;
+        ULDC UR6, c[0x0][0x328] ;
+        IMAD.U32 R17, RZ, RZ, UR6 ;
+        ISETP.NE.AND P0, PT, R7, 0x1, PT ;
+        ISETP.GT.AND P1, PT, R0, UR4, PT ;
+        @!P0 BRA L0 ;
+        ULDC UR4, c[0x0][0x2d8] ;
+        ULDC UR7, c[0x0][0x328] ;
+        UISETP.NE.AND UP0, UPT, UR4, URZ, UPT ;
+        UIMAD.WIDE.U32 UR4, UR7, UR4, URZ ;
+        @UP0 UMOV UR6, UR5 ;
+        IMAD R0, RZ, RZ, -UR6 ;
+        UIADD3 UR4, UR6, 0x1, URZ ;
+        IMAD R0, R7, R0, UR7 ;
+        IMAD.U32 R17, RZ, RZ, UR4 ;
+        ISETP.GE.U32.AND P0, PT, R0, R7, PT ;
+        @!P0 IMAD R17, RZ, RZ, UR6 ;
+L0:
+        IMAD.WIDE.U32 R24, R25, 0x1000, R22 ;
+        SHF.R.S32.HI R33, RZ, 0x1f, R37 ;
+        IMAD.WIDE.U32 R22, R3, 0x1000, R22 ;
+        @P1 BRA L1 ;
+        MOV R0, 0x0 ;
+        ULDC.64 UR4, c[0x4][0x30] ;
+        ULDC.64 UR6, c[0x4][0x10] ;
+        IMAD.U32 R4, RZ, RZ, UR4 ;
+        LDC.64 R2, c[0x4][R0] ;
+        IMAD.U32 R5, RZ, RZ, UR5 ;
+        ULDC.64 UR4, c[0x4][0x28] ;
+        IMAD.MOV.U32 R12, RZ, RZ, 0x1 ;
+        IMAD.U32 R6, RZ, RZ, UR4 ;
+        IMAD.U32 R7, RZ, RZ, UR5 ;
+        IMAD.U32 R10, RZ, RZ, UR6 ;
+        IMAD.U32 R11, RZ, RZ, UR7 ;
+        IMAD.MOV.U32 R8, RZ, RZ, 0x3cd ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        LEPC R20, 0x650 ;
+        CALL.ABS.NOINC R2 ;
+L1:
+        LDC.64 R2, c[0x0][0x320] ;
+        LDG.E R0, desc[UR36][R46.64+0x98] ;
+        ULDC UR4, c[0x0][0x330] ;
+        LDG.E.64 R8, desc[UR36][R46.64+0x8] ;
+        LDG.E.64 R6, desc[UR36][R46.64+0x10] ;
+        ISETP.NE.U32.AND P0, PT, R2, RZ, PT ;
+        ISETP.NE.AND.EX P0, PT, R3, RZ, PT, P0 ;
+        @P0 LDG.E R5, desc[UR36][R46.64+0xa0] ;
+        @!P0 LDG.E.64 R30, desc[UR36][R46.64+0xc0] ;
+        @!P0 LDG.E.64 R20, desc[UR36][R46.64+0xb8] ;
+        @P0 IMAD.WIDE.U32 R28, R5, 0x8, R28 ;
+        @P0 LD.E.64 R28, desc[UR36][R28.64] ;
+        @P0 IMAD.WIDE.U32 R26, R5, 0x8, R26 ;
+        LDG.E.64 R4, desc[UR36][R46.64+0x18] ;
+        @P0 LD.E.64 R26, desc[UR36][R26.64] ;
+        @P0 IMAD.WIDE R12, R17, 0x10, R28 ;
+        @P0 LD.E.64 R14, desc[UR36][R12.64+0x10] ;
+        @P0 LD.E.64 R10, desc[UR36][R26.64+0x8] ;
+        @P0 LD.E R36, desc[UR36][R12.64+0x18] ;
+        @P0 LD.E R35, desc[UR36][R26.64] ;
+        @!P0 IMAD.WIDE R38, R17, 0x4, R30 ;
+        UIADD3 UR4, UR4, 0x1, URZ ;
+        IMAD R29, R0, UR4, R17 ;
+        @!P0 IMAD.WIDE R20, R17, 0x8, R20 ;
+        IMAD.WIDE.U32 R12, R29, 0x2, R8 ;
+        LD.E.U16 R26, desc[UR36][R12.64] ;
+        @P0 IADD3 R30, P1, R24, R14, RZ ;
+        @P0 IMAD.X R31, R25, 0x1, R15, P1 ;
+        @P0 IADD3 R28, P1, R22, R10, RZ ;
+        IMAD.WIDE.U32 R24, R29.reuse, 0x2, R6 ;
+        @!P0 LD.E R36, desc[UR36][R38.64] ;
+        IMAD.WIDE.U32 R14, R29, 0x4, R4 ;
+        @!P0 LD.E.64 R30, desc[UR36][R20.64] ;
+        @P0 IMAD.X R29, R23, 0x1, R11, P1 ;
+        LD.E.U16 R24, desc[UR36][R24.64] ;
+        LD.E R22, desc[UR36][R14.64] ;
+        @!P0 LDG.E R35, desc[UR36][R46.64+0xa4] ;
+        @!P0 LDG.E.64 R28, desc[UR36][R46.64+0xb0] ;
+        @P0 LDC R23, c[0x0][0x320] ;
+        ISETP.GE.U32.AND P1, PT, R2, 0x40000001, PT ;
+        ISETP.GE.U32.AND.EX P1, PT, R3, RZ, PT, P1 ;
+        LEA R44, P2, R37, R18, 0x8 ;
+        LEA.HI.X R45, R37, R19, R33, 0x8, P2 ;
+        @!P0 IMAD.MOV.U32 R23, RZ, RZ, RZ ;
+        @!P1 BRA L78 ;
+        IADD3 R0, P0, R2, -0x1, RZ ;
+        IADD3.X R3, R3, -0x1, RZ, P0, !PT ;
+        SHF.R.U64 R0, R0, 0x1e, R3.reuse ;
+        SHF.R.U32.HI R2, RZ, 0x1e, R3 ;
+        ISETP.NE.U32.AND P0, PT, R0, RZ, PT ;
+        ISETP.NE.AND.EX P0, PT, R2, RZ, PT, P0 ;
+        @!P0 BRA L73 ;
+        IMAD.SHL.U32 R3, R17.reuse, 0x2, RZ ;
+        SHF.R.U32.HI R11, RZ, 0x1f, R17.reuse ;
+        IMAD.SHL.U32 R13, R17, 0x4, RZ ;
+        SHF.R.U32.HI R15, RZ, 0x1e, R17 ;
+        IADD3 R18, P0, R8, R3.reuse, RZ ;
+        IADD3 R6, P1, R6, R3, RZ ;
+        IADD3 R2, P2, R4, R13, RZ ;
+        IMAD.X R19, R9, 0x1, R11, P0 ;
+        IMAD.X R7, R7, 0x1, R11, P1 ;
+        IMAD.X R3, R5, 0x1, R15, P2 ;
+        LD.E.U16 R18, desc[UR36][R18.64] ;
+        LD.E.U16 R16, desc[UR36][R6.64] ;
+        LD.E R2, desc[UR36][R2.64] ;
+        BSSY B11, L73 ;
+        IMAD.MOV.U32 R27, RZ, RZ, RZ ;
+        S2R R33, SR_LANEID ;
+        IMAD.MOV.U32 R34, RZ, RZ, RZ ;
+L2:
+        YIELD ;
+        VOTE.ANY R3, PT, PT ;
+        S2R R32, SR_LTMASK ;
+        REDUX.OR UR4, R3 ;
+        R2UR P0, URZ, R3 ;
+        @!P0 BRA.DIV UR4, L145 ;
+        MATCH.ANY.U64 R0, R44 ;
+L3:
+        BREV R4, R0 ;
+        REDUX.OR UR4, R3 ;
+        R2UR P1, URZ, R3 ;
+        FLO.U32.SH R4, R4 ;
+        ISETP.NE.AND P0, PT, R4, R33, PT ;
+        @!P1 BRA.DIV UR4, L148 ;
+L4:
+        REDUX.OR UR4, R0 ;
+        R2UR P0, URZ, R0 ;
+        @!P0 BRA.DIV UR4, L151 ;
+        MATCH.ANY R9, R17 ;
+L5:
+        BREV R12, R9 ;
+        REDUX.OR UR4, R0 ;
+        R2UR P2, URZ, R0 ;
+        LOP3.LUT P1, R10, R32, RZ, R9, 0xa0, !PT ;
+        POPC R8, R9 ;
+        FLO.U32.SH R12, R12 ;
+        ISETP.NE.AND P0, PT, R12, R33, PT ;
+        @!P2 BRA.DIV UR4, L154 ;
+L6:
+        BSSY B0, L9 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        @P1 BRA L8 ;
+        LDG.E.64 R6, desc[UR36][R46.64+0xd0] ;
+        IMAD.SHL.U32 R11, R17, 0x4, RZ ;
+        SHF.R.U32.HI R5, RZ, 0x1e, R17 ;
+        IADD3 R4, P0, R6, R11, RZ ;
+        IMAD.X R5, R7, 0x1, R5, P0 ;
+        QSPC.E.L P0, RZ, [R4] ;
+        @P0 BRA L7 ;
+        VOTE.ANY R0, PT, PT ;
+        ISETP.EQ.U32.AND P0, PT, R0, -0x1, PT ;
+        @!P0 ATOM.E.ADD.STRONG.GPU PT, R13, desc[UR36][R4.64], R8 ;
+        @!P0 BRA L8 ;
+        SHFL.UP P0, R11, R8, 0x1, RZ ;
+        IMAD.MOV.U32 R7, RZ, RZ, R8 ;
+        S2R R33, SR_LANEID ;
+        @P0 IMAD.IADD.U32 R7, R8, 0x1, R11 ;
+        SHFL.UP P0, R0, R7, 0x2, RZ ;
+        ISETP.EQ.U32.AND P2, PT, R33, 0x1f, PT ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R0 ;
+        SHFL.UP P0, R0, R7, 0x4, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R0 ;
+        SHFL.UP P0, R0, R7, 0x8, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R0 ;
+        SHFL.UP P0, R0, R7, 0x10, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R0 ;
+        @P2 ATOM.E.ADD.STRONG.GPU PT, R4, desc[UR36][R4.64], R7 ;
+        SHFL.UP P0, R0, R7, 0x1, RZ ;
+        SHFL.IDX PT, R13, R4, 0x1f, 0x1f ;
+        @P0 IMAD.IADD.U32 R13, R13, 0x1, R0 ;
+        BRA L8 ;
+L7:
+        ULDC UR4, c[0x0][0x20] ;
+        IADD3 R6, R11, -UR4, R6 ;
+        LDL R11, [R6] ;
+        LDL.U8 R0, [R6] ;
+        LDL.U8 R5, [R6+0x1] ;
+        LDL.U8 R4, [R6+0x2] ;
+        LDL.U8 R7, [R6+0x3] ;
+        IMAD.IADD R11, R8, 0x1, R11 ;
+        STL [R6], R11 ;
+        NANOSLEEP RZ ;
+        PRMT R0, R5, 0x7604, R0 ;
+        PRMT R7, R7, 0x7604, R4 ;
+        PRMT R13, R7, 0x1054, R0 ;
+L8:
+        BSYNC B0 ;
+L9:
+        MATCH.ANY R0, R9 ;
+        REDUX.OR UR4, R9 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R9, UR5, R0, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L157 ;
+        SHFL.IDX PT, R14, R13, R12, 0x1f ;
+L10:
+        BSSY B0, L15 ;
+        @P1 BRA L14 ;
+        LDG.E.64 R4, desc[UR36][R46.64+0xe8] ;
+        QSPC.E.L P0, RZ, [R4] ;
+        @P0 BRA L13 ;
+        IMAD.MOV.U32 R6, RZ, RZ, R8 ;
+        IMAD.MOV.U32 R7, RZ, RZ, RZ ;
+        ATOM.E.ADD.64.STRONG.GPU P0, RZ, desc[UR36][R4.64], R6 ;
+        @P0 BRA L14 ;
+        QSPC.E.S P0, RZ, [R4] ;
+        @!P0 BRA L12 ;
+        MOV R11, R4 ;
+L11:
+        LDS.64 R4, [R11] ;
+        IADD3 R6, P0, R8, R4, RZ ;
+        IMAD.X R7, RZ, RZ, R5, P0 ;
+        ATOMS.CAST.SPIN.64 R6, [R11], R4, R6 ;
+        ISETP.EQ.U32.AND P0, PT, R6, 0x1, PT ;
+        ISETP.EQ.U32.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L11 ;
+        BRA L14 ;
+L12:
+        LD.E.64 R6, desc[UR36][R4.64] ;
+        IADD3 R6, P0, R8, R6, RZ ;
+        IMAD.X R7, RZ, RZ, R7, P0 ;
+        ST.E.64 desc[UR36][R4.64], R6 ;
+        BRA L14 ;
+L13:
+        ULDC UR4, c[0x0][0x20] ;
+        VIADD R7, R4, -UR4 ;
+        LDL.64 R4, [R7] ;
+        IADD3 R4, P0, R8, R4, RZ ;
+        IMAD.X R5, RZ, RZ, R5, P0 ;
+        STL.64 [R7], R4 ;
+        NANOSLEEP RZ ;
+        NOP ;
+L14:
+        BSYNC B0 ;
+L15:
+        MATCH.ANY R0, R9 ;
+        REDUX.OR UR4, R9 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        POPC R5, R10 ;
+        IMAD.IADD R14, R14, 0x1, R5 ;
+        LOP3.LUT P0, RZ, R9, UR5, R0, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L160 ;
+        NOP ;
+L16:
+        MATCH.ANY R0, R3 ;
+        REDUX.OR UR4, R3 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R3, UR5, R0, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L163 ;
+        NOP ;
+L17:
+        LDG.E.64 R50, desc[UR36][R46.64] ;
+        LDG.E.U16.CONSTANT R0, desc[UR36][R50.64+0x50] ;
+        SHF.R.U32.HI R0, RZ, 0x3, R0 ;
+        PRMT R4, R0, 0x9910, RZ ;
+        ISETP.NE.AND P0, PT, R4, RZ, PT ;
+        @!P0 BRA L25 ;
+        LOP3.LUT R5, R0, 0xffff, RZ, 0xc0, !PT ;
+        IADD3 R0, P1, R5.reuse, -0x1, RZ ;
+        LOP3.LUT R12, R5, 0x3, RZ, 0xc0, !PT ;
+        ISETP.GE.U32.AND P0, PT, R0, 0x3, PT ;
+        IMAD.X R0, RZ, RZ, -0x1, P1 ;
+        ISETP.GE.U32.AND.EX P0, PT, R0, RZ, PT, P0 ;
+        IMAD.MOV.U32 R0, RZ, RZ, RZ ;
+        @!P0 BRA L24 ;
+        IADD3 R5, P1, R5, -R12, RZ ;
+        BSSY B0, L24 ;
+        IMAD.MOV.U32 R0, RZ, RZ, RZ ;
+        ISETP.GT.U32.AND P0, PT, R5, RZ, PT ;
+        IMAD.X R7, RZ, RZ, -0x1, P1 ;
+        ISETP.GT.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L22 ;
+        ISETP.GT.U32.AND P1, PT, R5, 0xc, PT ;
+        PLOP3.LUT P0, PT, PT, PT, PT, 0x80, 0x0 ;
+        ISETP.GT.AND.EX P1, PT, R7, RZ, PT, P1 ;
+        @!P1 BRA L19 ;
+        BSSY B1, L19 ;
+        PLOP3.LUT P0, PT, PT, PT, PT, 0x8, 0x0 ;
+L18:
+        VIADD R6, R0.reuse, 0x4 ;
+        IADD3 R5, P1, R5, -0x10, RZ ;
+        VIADD R8, R0.reuse, 0x8 ;
+        VIADD R10, R0.reuse, 0xc ;
+        IADD3.X R7, R7, -0x1, RZ, P1, !PT ;
+        IMAD R4, R0, 0x8, R1.reuse ;
+        ISETP.GT.U32.AND P1, PT, R5, 0xc, PT ;
+        IMAD R6, R6, 0x8, R1.reuse ;
+        IMAD R8, R8, 0x8, R1.reuse ;
+        STL.64 [R4], RZ ;
+        IMAD R10, R10, 0x8, R1 ;
+        ISETP.GT.AND.EX P1, PT, R7, RZ, PT, P1 ;
+        VIADD R0, R0, 0x10 ;
+        STL.64 [R4+0x8], RZ ;
+        STL.64 [R4+0x10], RZ ;
+        STL.64 [R4+0x18], RZ ;
+        STL.64 [R6], RZ ;
+        STL.64 [R6+0x8], RZ ;
+        STL.64 [R6+0x10], RZ ;
+        STL.64 [R6+0x18], RZ ;
+        STL.64 [R8], RZ ;
+        STL.64 [R8+0x8], RZ ;
+        STL.64 [R8+0x10], RZ ;
+        STL.64 [R8+0x18], RZ ;
+        STL.64 [R10], RZ ;
+        STL.64 [R10+0x8], RZ ;
+        STL.64 [R10+0x10], RZ ;
+        STL.64 [R10+0x18], RZ ;
+        @P1 BRA L18 ;
+        BSYNC B1 ;
+L19:
+        ISETP.GT.U32.AND P1, PT, R5, 0x4, PT ;
+        BSSY B1, L21 ;
+        ISETP.GT.AND.EX P1, PT, R7, RZ, PT, P1 ;
+        @!P1 BRA L20 ;
+        VIADD R6, R0.reuse, 0x4 ;
+        IADD3 R5, P1, R5, -0x8, RZ ;
+        IMAD R4, R0, 0x8, R1.reuse ;
+        PLOP3.LUT P0, PT, PT, PT, PT, 0x8, 0x0 ;
+        IMAD R6, R6, 0x8, R1 ;
+        IADD3.X R7, R7, -0x1, RZ, P1, !PT ;
+        VIADD R0, R0, 0x8 ;
+        STL.64 [R4], RZ ;
+        STL.64 [R4+0x8], RZ ;
+        STL.64 [R4+0x10], RZ ;
+        STL.64 [R4+0x18], RZ ;
+        STL.64 [R6], RZ ;
+        STL.64 [R6+0x8], RZ ;
+        STL.64 [R6+0x10], RZ ;
+        STL.64 [R6+0x18], RZ ;
+L20:
+        BSYNC B1 ;
+L21:
+        ISETP.NE.U32.AND P1, PT, R5, RZ, PT ;
+        ISETP.NE.OR.EX P0, PT, R7, RZ, P0, P1 ;
+        @!P0 BRA L23 ;
+L22:
+        IMAD R4, R0.reuse, 0x8, R1 ;
+        IADD3 R5, P0, R5, -0x4, RZ ;
+        VIADD R0, R0, 0x4 ;
+        STL.64 [R4], RZ ;
+        IADD3.X R7, R7, -0x1, RZ, P0, !PT ;
+        ISETP.NE.U32.AND P0, PT, R5, RZ, PT ;
+        STL.64 [R4+0x8], RZ ;
+        ISETP.NE.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        STL.64 [R4+0x10], RZ ;
+        STL.64 [R4+0x18], RZ ;
+        @P0 BRA L22 ;
+L23:
+        BSYNC B0 ;
+L24:
+        ISETP.NE.U32.AND P0, PT, R12, RZ, PT ;
+        ISETP.NE.AND.EX P0, PT, RZ, RZ, PT, P0 ;
+        @!P0 BRA L25 ;
+        IMAD R0, R0, 0x8, R1 ;
+        ISETP.NE.U32.AND P0, PT, R12, 0x1, PT ;
+        STL.64 [R0], RZ ;
+        ISETP.NE.AND.EX P0, PT, RZ, RZ, PT, P0 ;
+        @!P0 BRA L25 ;
+        ISETP.NE.U32.AND P0, PT, R12, 0x2, PT ;
+        STL.64 [R0+0x8], RZ ;
+        ISETP.NE.AND.EX P0, PT, RZ, RZ, PT, P0 ;
+        @P0 STL.64 [R0+0x10], RZ ;
+L25:
+        LDL.U16 R5, [R1+0x2] ;
+        LDG.E.U8.CONSTANT R6, desc[UR36][R50.64+0x40] ;
+        IMAD.MOV.U32 R7, RZ, RZ, 0x70 ;
+        SHF.R.U32.HI R4, RZ, 0x10, R17 ;
+        PRMT R8, R14, 0x7610, R8 ;
+        LEA R10, P0, R27, R30, 0x1e ;
+        PRMT R9, R17, 0x5410, R4 ;
+        SHF.R.U32.HI R4, RZ, 0x10, R14 ;
+        LEA.HI.X R12, R27, R31, R34, 0x1e, P0 ;
+        STL [R1+0x1c], R9 ;
+        STL.U16 [R1+0x1a], R4 ;
+        PRMT R0, R5, 0x7770, RZ ;
+        PRMT R5, R5, 0x7771, RZ ;
+        LOP3.LUT R0, R0, 0xff82, R7, 0xec, !PT ;
+        IMAD.IADD R41, R1, 0x1, R6 ;
+        LOP3.LUT R5, R5, 0x1c, RZ, 0xfc, !PT ;
+        PRMT R7, R5, 0x7604, R0 ;
+        PRMT R8, R8, 0x5410, R7 ;
+        STL [R1], R8 ;
+        STL [R41+0x8], R10 ;
+        STL [R41+0xc], R12 ;
+        STL [R41+0x4], R36 ;
+        LDL.U8 R6, [R1+0xe] ;
+        IMAD.MOV.U32 R7, RZ, RZ, 0xfc ;
+        REDUX.OR UR4, R3 ;
+        R2UR P0, URZ, R3 ;
+        STL.U16 [R1+0xc], R18 ;
+        STL.U16 [R1+0x4], R16 ;
+        STL [R1+0x10], R2 ;
+        LOP3.LUT R6, R6, 0x1, R7, 0xec, !PT ;
+        STL.U8 [R1+0xe], R6 ;
+        @!P0 BRA.DIV UR4, L166 ;
+        MATCH.ANY.U64 R25, R50 ;
+L26:
+        LD.E R39, desc[UR36][R50.64+0x18] ;
+        BREV R12, R25 ;
+        REDUX.OR UR4, R3 ;
+        R2UR P1, URZ, R3 ;
+        LOP3.LUT P2, RZ, R32, RZ, R25, 0xa0, !PT ;
+        P2R R43, PR, RZ, 0x4 ;
+        FLO.U32.SH R12, R12 ;
+        ISETP.NE.AND P0, PT, R12, R33, PT ;
+        @!P1 BRA.DIV UR4, L169 ;
+L27:
+        ULDC UR4, c[0x0][0x20] ;
+        BSSY B0, L30 ;
+        VIADD R37, R50, -UR4 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        @P2 BRA L29 ;
+        QSPC.E.L P0, RZ, [R50+0x28] ;
+        @P0 BRA L28 ;
+        VOTE.ANY R3, PT, PT ;
+        POPC R7, R25 ;
+        ISETP.EQ.U32.AND P0, PT, R3, -0x1, PT ;
+        @!P0 ATOM.E.ADD.STRONG.GPU PT, R13, desc[UR36][R50.64+0x28], R7 ;
+        @!P0 BRA L29 ;
+        SHFL.UP P0, R4, R7, 0x1, RZ ;
+        IMAD.MOV.U32 R3, RZ, RZ, R7 ;
+        S2R R33, SR_LANEID ;
+        @P0 IMAD.IADD.U32 R3, R7, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x2, RZ ;
+        ISETP.EQ.U32.AND P1, PT, R33, 0x1f, PT ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x4, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x8, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x10, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        @P1 ATOM.E.ADD.STRONG.GPU PT, R4, desc[UR36][R50.64+0x28], R3 ;
+        SHFL.UP P0, R6, R3, 0x1, RZ ;
+        SHFL.IDX PT, R13, R4, 0x1f, 0x1f ;
+        @P0 IMAD.IADD.U32 R13, R13, 0x1, R6 ;
+        BRA L29 ;
+L28:
+        LDL R8, [R37+0x28] ;
+        LDL.U8 R3, [R37+0x28] ;
+        LDL.U8 R4, [R37+0x29] ;
+        LDL.U8 R6, [R37+0x2a] ;
+        LDL.U8 R7, [R37+0x2b] ;
+        POPC R9, R25 ;
+        IMAD.IADD R8, R8, 0x1, R9 ;
+        STL [R37+0x28], R8 ;
+        NANOSLEEP RZ ;
+        PRMT R3, R4, 0x7604, R3 ;
+        PRMT R6, R7, 0x7604, R6 ;
+        PRMT R13, R6, 0x1054, R3 ;
+L29:
+        BSYNC B0 ;
+L30:
+        MATCH.ANY R4, R25 ;
+        REDUX.OR UR4, R25 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R25, UR5, R4, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L172 ;
+        SHFL.IDX PT, R23, R13, R12, 0x1f ;
+L31:
+        ISETP.NE.AND P0, PT, R25, RZ, PT ;
+        @!P0 BRA L72 ;
+        QSPC.E.L P1, RZ, [R50+0x20] ;
+        LOP3.LUT R0, R0, 0xff, RZ, 0xc0, !PT ;
+        BSSY B10, L72 ;
+        LOP3.LUT R5, R5, 0xffff, RZ, 0xc0, !PT ;
+        QSPC.E.L P0, RZ, [R50+0x24] ;
+        IMAD.MOV.U32 R38, RZ, RZ, RZ ;
+        PRMT R0, R5, 0x7604, R0 ;
+        LOP3.LUT R0, R0, 0xffff, RZ, 0xc0, !PT ;
+        SHF.R.U32.HI R19, RZ, 0x8, R0 ;
+        P2R R42, PR, RZ, 0x2 ;
+        P2R R40, PR, RZ, 0x1 ;
+L32:
+        POPC R3, R25 ;
+        ISETP.NE.AND P0, PT, R43, RZ, PT ;
+        IMAD.IADD R0, R23, 0x1, R38 ;
+        YIELD ;
+        BSSY B0, L47 ;
+        VIADDMNMX R3, R3, -R38, R39, PT ;
+        IMAD.IADD R10, R3, 0x1, R0 ;
+        @P0 BRA L46 ;
+        SHF.R.U32.HI R12, RZ, 0x18, R0.reuse ;
+        SHF.R.U32.HI R14, RZ, 0x10, R0.reuse ;
+        SHF.R.U32.HI R20, RZ, 0x8, R0 ;
+L33:
+        ISETP.NE.AND P1, PT, R42, RZ, PT ;
+        @!P1 LD.E.STRONG.GPU R7, desc[UR36][R50.64+0x20] ;
+        YIELD ;
+        BSSY B1, L35 ;
+        @!P1 BRA L34 ;
+        LDL.U8 R4, [R37+0x20] ;
+        LDL.U8 R5, [R37+0x21] ;
+        LDL.U8 R6, [R37+0x22] ;
+        LDL.U8 R7, [R37+0x23] ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R7, R7, 0x1054, R4 ;
+L34:
+        BSYNC B1 ;
+L35:
+        IMAD.IADD R4, R10, 0x1, -R7 ;
+        ISETP.GT.U32.AND P0, PT, R4, R39, PT ;
+        @!P0 BRA L46 ;
+        ISETP.NE.AND P2, PT, R40, RZ, PT ;
+        @!P2 LD.E.STRONG.GPU R7, desc[UR36][R50.64+0x24] ;
+        @!P2 CCTL.IVALL ;
+        BSSY B1, L37 ;
+        @!P2 BRA L36 ;
+        LDL.U8 R4, [R37+0x24] ;
+        LDL.U8 R5, [R37+0x25] ;
+        LDL.U8 R6, [R37+0x26] ;
+        LDL.U8 R7, [R37+0x27] ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R7, R7, 0x1054, R4 ;
+L36:
+        BSYNC B1 ;
+L37:
+        ISETP.NE.AND P0, PT, R7, R0, PT ;
+        BSSY B1, L45 ;
+        @P0 BRA L44 ;
+        @!P1 LD.E.STRONG.GPU R7, desc[UR36][R50.64+0x20] ;
+        BSSY B2, L39 ;
+        @!P1 BRA L38 ;
+        LDL.U8 R4, [R37+0x20] ;
+        LDL.U8 R5, [R37+0x21] ;
+        LDL.U8 R6, [R37+0x22] ;
+        LDL.U8 R7, [R37+0x23] ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R7, R7, 0x1054, R4 ;
+L38:
+        BSYNC B2 ;
+L39:
+        ISETP.NE.AND P0, PT, R0, R7, PT ;
+        @!P0 BRA L44 ;
+        IMAD.IADD R8, R0, 0x1, -R7 ;
+        IMAD.MOV.U32 R9, RZ, RZ, RZ ;
+        ATOM.E.ADD.64.STRONG.GPU P0, RZ, desc[UR36][R44.64+0x28], R8 ;
+        BSSY B2, L43 ;
+        @P0 BRA L42 ;
+        QSPC.E.S P0, RZ, [R44+0x28] ;
+        @!P0 BRA L41 ;
+        IMAD.MOV.U32 R4, RZ, RZ, R44 ;
+        MOV R11, R4 ;
+L40:
+        LDS.64 R4, [R11+0x28] ;
+        IADD3 R6, P0, R8, R4, RZ ;
+        IMAD.X R7, RZ, RZ, R5, P0 ;
+        ATOMS.CAST.SPIN.64 R6, [R11+0x28], R4, R6 ;
+        ISETP.EQ.U32.AND P0, PT, R6, 0x1, PT ;
+        ISETP.EQ.U32.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L40 ;
+        BRA L42 ;
+L41:
+        LD.E.64 R4, desc[UR36][R44.64+0x28] ;
+        IADD3 R8, P0, R8, R4, RZ ;
+        IMAD.X R9, RZ, RZ, R5, P0 ;
+        ST.E.64 desc[UR36][R44.64+0x28], R8 ;
+L42:
+        BSYNC B2 ;
+L43:
+        ISETP.NE.AND P0, PT, R42, RZ, PT ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!P0 MEMBAR.ALL.CTA ;
+        @!P0 MEMBAR.ALL.GPU ;
+        @!P0 ERRBAR;
+        @!P0 CGAERRBAR ;
+        @!P0 ST.E.STRONG.GPU desc[UR36][R50.64+0x20], R0 ;
+        @P0 STL.U8 [R37+0x20], R0 ;
+        @P0 STL.U8 [R37+0x23], R12 ;
+        @P0 STL.U8 [R37+0x22], R14 ;
+        @P0 STL.U8 [R37+0x21], R20 ;
+L44:
+        BSYNC B1 ;
+L45:
+        BRA L33 ;
+L46:
+        BSYNC B0 ;
+L47:
+        MATCH.ANY R4, R25 ;
+        REDUX.OR UR4, R25 ;
+        LOP3.LUT R0, R32, RZ, R25, 0xa0, !PT ;
+        VOTEU.ANY UR5, UPT, PT ;
+        POPC R0, R0 ;
+        LOP3.LUT P0, RZ, R25, UR5, R4, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L175 ;
+        NOP ;
+L48:
+        IMAD.IADD R3, R3, 0x1, R38 ;
+        BSSY B9, L57 ;
+        ISETP.GE.AND P0, PT, R0, R3, PT ;
+        ISETP.LT.OR P0, PT, R0, R38, P0 ;
+        @P0 BRA L56 ;
+        LDL.U8 R0, [R1+0x2] ;
+        IMAD.MOV.U32 R4, RZ, RZ, 0x1 ;
+        LD.E R48, desc[UR36][R50.64+0x14] ;
+        BSSY B8, L55 ;
+        BSSY B7, L53 ;
+        STL.U16 [R1+0x6], R4 ;
+        LOP3.LUT R0, R0, 0xf, RZ, 0xc0, !PT ;
+        VIADD R3, R0, 0xffffffff ;
+        LOP3.LUT R3, R3, 0xffff, RZ, 0xc0, !PT ;
+        ISETP.GE.U32.AND P0, PT, R3, 0x2, PT ;
+        @!P0 BRA L51 ;
+        ISETP.NE.AND P0, PT, R0, RZ, PT ;
+        @P0 BREAK B7 ;
+        @!P0 BRA L50 ;
+        MOV R14, 0x0 ;
+        ULDC.64 UR4, c[0x4][0x20] ;
+        ULDC.64 UR6, c[0x4][0x28] ;
+        IMAD.U32 R4, RZ, RZ, UR4 ;
+        IMAD.U32 R5, RZ, RZ, UR5 ;
+        LDC.64 R14, c[0x4][R14] ;
+        ULDC.64 UR4, c[0x4][0x8] ;
+        IMAD.MOV.U32 R12, RZ, RZ, 0x1 ;
+        IMAD.U32 R6, RZ, RZ, UR6 ;
+        IMAD.U32 R7, RZ, RZ, UR7 ;
+        IMAD.U32 R10, RZ, RZ, UR4 ;
+        IMAD.U32 R11, RZ, RZ, UR5 ;
+        IMAD.MOV.U32 R8, RZ, RZ, 0x232 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        BSSY B6, L49 ;
+        LEPC R20, 0x2850 ;
+        CALL.ABS.NOINC R14 ;
+        BSYNC B6 ;
+L49:
+        BRA L54 ;
+L50:
+        LDG.E.U8.CONSTANT R0, desc[UR36][R50.64+0x42] ;
+        BRA L52 ;
+L51:
+        LDG.E.U8.CONSTANT R0, desc[UR36][R50.64+0x41] ;
+        IMAD.MOV.U32 R4, RZ, RZ, 0x40000000 ;
+        STL [R41], R4 ;
+L52:
+        BSYNC B7 ;
+L53:
+        LOP3.LUT R0, R0, 0xff, RZ, 0xc0, !PT ;
+        IMAD.IADD R3, R1, 0x1, R0 ;
+        LDL R0, [R3+0x4] ;
+        LEA R4, P0, R27, R28, 0x1e ;
+        IMAD.MOV.U32 R8, RZ, RZ, 0x40000000 ;
+        LOP3.LUT R5, R35, 0xffffff, RZ, 0xc0, !PT ;
+        LEA.HI.X R6, R27, R29, R34, 0x1e, P0 ;
+        STL [R3+0x8], R4 ;
+        STL [R3], R8 ;
+        STL [R3+0xc], R6 ;
+        LOP3.LUT R0, R5, 0xff000000, R0, 0xf8, !PT ;
+        STL [R3+0x4], R0 ;
+        LDL.U8 R19, [R1+0x3] ;
+L54:
+        BSYNC B8 ;
+L55:
+        S2R R0, SR_LTMASK ;
+        LOP3.LUT R19, R19, 0xfffe, RZ, 0xc0, !PT ;
+        LOP3.LUT R3, R0, R25, RZ, 0xc0, !PT ;
+        POPC R0, R3 ;
+        IMAD.IADD R5, R23, 0x1, R0 ;
+        SHF.R.U32.HI R0, RZ, R48, R5 ;
+        LOP3.LUT R0, R19, 0x1, R0, 0xf8, !PT ;
+        PRMT R19, R0, 0x7610, R19 ;
+        STL.U8 [R1+0x3], R0 ;
+L56:
+        BSYNC B9 ;
+L57:
+        MATCH.ANY R0, R25 ;
+        REDUX.OR UR4, R25 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R25, UR5, R0, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L178 ;
+        NOP ;
+L58:
+        ISETP.NE.AND P0, PT, R43, RZ, PT ;
+        BSSY B0, L70 ;
+        @P0 BRA L69 ;
+        BSSY B1, L62 ;
+L59:
+        ISETP.NE.AND P0, PT, R40, RZ, PT ;
+        @!P0 LD.E.STRONG.GPU R0, desc[UR36][R50.64+0x24] ;
+        YIELD ;
+        BSSY B2, L61 ;
+        IMAD.IADD R7, R23, 0x1, R38 ;
+        @!P0 BRA L60 ;
+        LDL.U8 R0, [R37+0x24] ;
+        LDL.U8 R3, [R37+0x25] ;
+        LDL.U8 R4, [R37+0x26] ;
+        LDL.U8 R5, [R37+0x27] ;
+        NANOSLEEP RZ ;
+        PRMT R0, R3, 0x7604, R0 ;
+        PRMT R5, R5, 0x7604, R4 ;
+        PRMT R0, R5, 0x1054, R0 ;
+L60:
+        BSYNC B2 ;
+L61:
+        ISETP.NE.AND P0, PT, R0, R7, PT ;
+        @P0 BRA L59 ;
+        BSYNC B1 ;
+L62:
+        ISETP.NE.AND P1, PT, R42, RZ, PT ;
+        POPC R0, R25 ;
+        @!P1 LD.E.STRONG.GPU R3, desc[UR36][R50.64+0x20] ;
+        BSSY B1, L64 ;
+        VIADDMNMX R0, R0, -R38, R39, PT ;
+        IMAD.IADD R0, R0, 0x1, R7 ;
+        @!P1 BRA L63 ;
+        LDL.U8 R3, [R37+0x20] ;
+        LDL.U8 R4, [R37+0x21] ;
+        LDL.U8 R5, [R37+0x22] ;
+        LDL.U8 R6, [R37+0x23] ;
+        NANOSLEEP RZ ;
+        PRMT R3, R4, 0x7604, R3 ;
+        PRMT R6, R6, 0x7604, R5 ;
+        PRMT R3, R6, 0x1054, R3 ;
+L63:
+        BSYNC B1 ;
+L64:
+        IMAD.IADD R8, R0, 0x1, -R3 ;
+        IMAD.MOV.U32 R9, RZ, RZ, RZ ;
+        ATOM.E.ADD.64.STRONG.GPU P0, RZ, desc[UR36][R44.64+0x28], R8 ;
+        BSSY B1, L68 ;
+        @P0 BRA L67 ;
+        QSPC.E.S P0, RZ, [R44+0x28] ;
+        @!P0 BRA L66 ;
+        IMAD.MOV.U32 R4, RZ, RZ, R44 ;
+        MOV R3, R4 ;
+L65:
+        LDS.64 R4, [R3+0x28] ;
+        IADD3 R6, P0, R8, R4, RZ ;
+        IMAD.X R7, RZ, RZ, R5, P0 ;
+        ATOMS.CAST.SPIN.64 R6, [R3+0x28], R4, R6 ;
+        ISETP.EQ.U32.AND P0, PT, R6, 0x1, PT ;
+        ISETP.EQ.U32.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L65 ;
+        BRA L67 ;
+L66:
+        LD.E.64 R4, desc[UR36][R44.64+0x28] ;
+        IADD3 R8, P0, R8, R4, RZ ;
+        IMAD.X R9, RZ, RZ, R5, P0 ;
+        ST.E.64 desc[UR36][R44.64+0x28], R8 ;
+L67:
+        BSYNC B1 ;
+L68:
+        ISETP.NE.AND P1, PT, R42, RZ, PT ;
+        ISETP.NE.AND P0, PT, R40, RZ, PT ;
+        @P1 SHF.R.U32.HI R4, RZ, 0x18, R0 ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!P1 MEMBAR.ALL.CTA ;
+        @!P1 MEMBAR.ALL.GPU ;
+        @!P1 ERRBAR;
+        @!P1 CGAERRBAR ;
+        @!P1 ST.E.STRONG.GPU desc[UR36][R50.64+0x20], R0 ;
+        @P1 SHF.R.U32.HI R6, RZ, 0x10, R0.reuse ;
+        @P1 SHF.R.U32.HI R8, RZ, 0x8, R0.reuse ;
+        @P1 STL.U8 [R37+0x23], R4 ;
+        @P0 SHF.R.U32.HI R10, RZ, 0x18, R0 ;
+        @P0 SHF.R.U32.HI R12, RZ, 0x10, R0.reuse ;
+        @P1 STL.U8 [R37+0x22], R6 ;
+        @P0 SHF.R.U32.HI R14, RZ, 0x8, R0 ;
+        @P1 STL.U8 [R37+0x21], R8 ;
+        @P1 STL.U8 [R37+0x20], R0 ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!P0 MEMBAR.ALL.CTA ;
+        @!P0 MEMBAR.ALL.GPU ;
+        @!P0 ERRBAR;
+        @!P0 CGAERRBAR ;
+        @!P0 ST.E.STRONG.GPU desc[UR36][R50.64+0x24], R0 ;
+        @P0 STL.U8 [R37+0x24], R0 ;
+        @P0 STL.U8 [R37+0x27], R10 ;
+        @P0 STL.U8 [R37+0x26], R12 ;
+        @P0 STL.U8 [R37+0x25], R14 ;
+L69:
+        BSYNC B0 ;
+L70:
+        MATCH.ANY R0, R25 ;
+        REDUX.OR UR4, R25 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        POPC R3, R25 ;
+        LOP3.LUT P0, RZ, R25, UR5, R0, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L181 ;
+        NOP ;
+L71:
+        IMAD.IADD R38, R39, 0x1, R38 ;
+        ISETP.GT.AND P0, PT, R3, R38, PT ;
+        @P0 BRA L32 ;
+        BSYNC B10 ;
+L72:
+        ULDC.64 UR4, c[0x0][0x320] ;
+        IADD3 R27, P0, R27, 0x1, RZ ;
+        UIADD3 UR4, UP0, UR4, -0x1, URZ ;
+        UIADD3.X UR5, UR5, -0x1, URZ, UP0, !UPT ;
+        IMAD.X R34, RZ, RZ, R34, P0 ;
+        USHF.R.U64 UR4, UR4, 0x1e, UR5 ;
+        USHF.R.U32.HI UR5, URZ, 0x1e, UR5 ;
+        ISETP.GE.U32.AND P0, PT, R27, UR4, PT ;
+        ISETP.GE.U32.AND.EX P0, PT, R34, UR5, PT, P0 ;
+        @!P0 BRA L2 ;
+        BSYNC B11 ;
+L73:
+        LDG.E.64 R2, desc[UR36][R46.64+0xd0] ;
+        LDC R9, c[0x0][0x20] ;
+        IMAD.WIDE R4, R17, 0x4, R2 ;
+        QSPC.E.L P0, RZ, [R4] ;
+        @!P0 LD.E.STRONG.SYS R6, desc[UR36][R4.64] ;
+        @!P0 CCTL.IVALL ;
+        IMAD.IADD R0, R2, 0x1, -R9 ;
+        IMAD R0, R17, 0x4, R0 ;
+        @!P0 BRA L74 ;
+        LDL.U8 R2, [R0] ;
+        LDL.U8 R3, [R0+0x1] ;
+        LDL.U8 R4, [R0+0x2] ;
+        LDL.U8 R5, [R0+0x3] ;
+        NANOSLEEP RZ ;
+        PRMT R2, R3, 0x7604, R2 ;
+        PRMT R5, R5, 0x7604, R4 ;
+        PRMT R6, R5, 0x1054, R2 ;
+L74:
+        BSSY B0, L77 ;
+        IMAD.SHL.U32 R11, R17, 0x4, RZ ;
+        SHF.R.U32.HI R13, RZ, 0x1e, R17 ;
+L75:
+        LDG.E.64 R2, desc[UR36][R46.64+0xd8] ;
+        IADD3 R4, P0, R2, R11, RZ ;
+        IMAD.X R5, R3, 0x1, R13, P0 ;
+        QSPC.E.L P0, RZ, [R4] ;
+        @!P0 LD.E.STRONG.SYS R7, desc[UR36][R4.64] ;
+        @!P0 CCTL.IVALL ;
+        YIELD ;
+        @!P0 BRA L76 ;
+        IADD3 R4, R11, R2, -R9 ;
+        LDL.U8 R0, [R4] ;
+        LDL.U8 R3, [R4+0x1] ;
+        LDL.U8 R2, [R4+0x2] ;
+        LDL.U8 R5, [R4+0x3] ;
+        NANOSLEEP RZ ;
+        PRMT R0, R3, 0x7604, R0 ;
+        PRMT R5, R5, 0x7604, R2 ;
+        PRMT R7, R5, 0x1054, R0 ;
+L76:
+        IMAD.IADD R7, R7, 0x1, -R6 ;
+        ISETP.GE.AND P0, PT, R7, RZ, PT ;
+        @!P0 BRA L75 ;
+        BSYNC B0 ;
+L77:
+        ULDC.64 UR6, c[0x0][0x320] ;
+        UIADD3 UR5, UP0, UR6, -0x1, URZ ;
+        ULOP3.LUT UR5, UR5, 0xc0000000, URZ, 0xc0, !UPT ;
+        UIADD3.X UR7, UR7, -0x1, URZ, UP0, !UPT ;
+        UIADD3 UR4, -UR5, UR6, URZ ;
+        IADD3 R28, P0, R28, UR5, RZ ;
+        IADD3 R30, P1, R30, UR5, RZ ;
+        IMAD.U32 R23, RZ, RZ, UR4 ;
+        IADD3.X R29, R29, UR7, RZ, P0, !PT ;
+        IADD3.X R31, R31, UR7, RZ, P1, !PT ;
+L78:
+        VOTE.ANY R3, PT, PT ;
+        REDUX.OR UR4, R3 ;
+        R2UR P0, URZ, R3 ;
+        @!P0 BRA.DIV UR4, L184 ;
+        MATCH.ANY.U64 R2, R44 ;
+L79:
+        S2R R21, SR_LANEID ;
+        BREV R0, R2 ;
+        REDUX.OR UR4, R3 ;
+        R2UR P1, URZ, R3 ;
+        FLO.U32.SH R0, R0 ;
+        ISETP.NE.AND P0, PT, R0, R21, PT ;
+        @!P1 BRA.DIV UR4, L187 ;
+L80:
+        REDUX.OR UR4, R2 ;
+        R2UR P0, URZ, R2 ;
+        @!P0 BRA.DIV UR4, L190 ;
+        MATCH.ANY R0, R17 ;
+L81:
+        S2R R19, SR_LTMASK ;
+        BREV R12, R0 ;
+        REDUX.OR UR4, R2 ;
+        R2UR P2, URZ, R2 ;
+        POPC R8, R0 ;
+        FLO.U32.SH R12, R12 ;
+        LOP3.LUT P1, RZ, R19, R0, RZ, 0xc0, !PT ;
+        ISETP.NE.AND P0, PT, R12, R21, PT ;
+        @!P2 BRA.DIV UR4, L193 ;
+L82:
+        BSSY B0, L85 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        @P1 BRA L84 ;
+        LDG.E.64 R6, desc[UR36][R46.64+0xd0] ;
+        ULDC UR4, c[0x0][0x20] ;
+        IMAD.WIDE.U32 R4, R17, 0x4, R6 ;
+        VIADD R2, R6, -UR4 ;
+        QSPC.E.L P0, RZ, [R4] ;
+        IMAD R2, R17, 0x4, R2 ;
+        @P0 BRA L83 ;
+        VOTE.ANY R2, PT, PT ;
+        ISETP.EQ.U32.AND P0, PT, R2, -0x1, PT ;
+        @!P0 ATOM.E.ADD.STRONG.GPU PT, R13, desc[UR36][R4.64], R8 ;
+        @!P0 BRA L84 ;
+        SHFL.UP P0, R11, R8, 0x1, RZ ;
+        IMAD.MOV.U32 R7, RZ, RZ, R8 ;
+        ISETP.EQ.U32.AND P2, PT, R21, 0x1f, PT ;
+        @P0 IMAD.IADD.U32 R7, R8, 0x1, R11 ;
+        SHFL.UP P0, R2, R7, 0x2, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R2 ;
+        SHFL.UP P0, R2, R7, 0x4, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R2 ;
+        SHFL.UP P0, R2, R7, 0x8, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R2 ;
+        SHFL.UP P0, R2, R7, 0x10, RZ ;
+        @P0 IMAD.IADD.U32 R7, R7, 0x1, R2 ;
+        @P2 ATOM.E.ADD.STRONG.GPU PT, R4, desc[UR36][R4.64], R7 ;
+        SHFL.UP P0, R2, R7, 0x1, RZ ;
+        SHFL.IDX PT, R13, R4, 0x1f, 0x1f ;
+        @P0 IMAD.IADD.U32 R13, R13, 0x1, R2 ;
+        BRA L84 ;
+L83:
+        LDL R11, [R2] ;
+        LDL.U8 R4, [R2] ;
+        LDL.U8 R5, [R2+0x1] ;
+        LDL.U8 R6, [R2+0x2] ;
+        LDL.U8 R7, [R2+0x3] ;
+        IMAD.IADD R11, R8, 0x1, R11 ;
+        STL [R2], R11 ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R13, R7, 0x1054, R4 ;
+L84:
+        BSYNC B0 ;
+L85:
+        MATCH.ANY R5, R0 ;
+        REDUX.OR UR4, R0 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R0, UR5, R5, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L196 ;
+        SHFL.IDX PT, R14, R13, R12, 0x1f ;
+L86:
+        LOP3.LUT R2, R19, R0, RZ, 0xc0, !PT ;
+        BSSY B0, L91 ;
+        POPC R5, R2 ;
+        IMAD.IADD R14, R14, 0x1, R5 ;
+        @P1 BRA L90 ;
+        LDG.E.64 R6, desc[UR36][R46.64+0xe8] ;
+        QSPC.E.L P0, RZ, [R6] ;
+        @P0 BRA L89 ;
+        IMAD.MOV.U32 R9, RZ, RZ, RZ ;
+        ATOM.E.ADD.64.STRONG.GPU P0, RZ, desc[UR36][R6.64], R8 ;
+        @P0 BRA L90 ;
+        QSPC.E.S P0, RZ, [R6] ;
+        @!P0 BRA L88 ;
+        IMAD.MOV.U32 R4, RZ, RZ, R6 ;
+        MOV R11, R4 ;
+L87:
+        LDS.64 R4, [R11] ;
+        IADD3 R6, P0, R8, R4, RZ ;
+        IMAD.X R7, RZ, RZ, R5, P0 ;
+        ATOMS.CAST.SPIN.64 R6, [R11], R4, R6 ;
+        ISETP.EQ.U32.AND P0, PT, R6, 0x1, PT ;
+        ISETP.EQ.U32.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L87 ;
+        BRA L90 ;
+L88:
+        LD.E.64 R4, desc[UR36][R6.64] ;
+        IADD3 R8, P0, R8, R4, RZ ;
+        IMAD.X R9, RZ, RZ, R5, P0 ;
+        ST.E.64 desc[UR36][R6.64], R8 ;
+        BRA L90 ;
+L89:
+        ULDC UR4, c[0x0][0x20] ;
+        VIADD R7, R6, -UR4 ;
+        LDL.64 R4, [R7] ;
+        IADD3 R8, P0, R8, R4, RZ ;
+        IMAD.X R9, RZ, RZ, R5, P0 ;
+        STL.64 [R7], R8 ;
+        NANOSLEEP RZ ;
+        NOP ;
+L90:
+        BSYNC B0 ;
+L91:
+        MATCH.ANY R5, R0 ;
+        REDUX.OR UR4, R0 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R0, UR5, R5, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L199 ;
+        NOP ;
+L92:
+        MATCH.ANY R0, R3 ;
+        REDUX.OR UR4, R3 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R3, UR5, R0, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L202 ;
+        NOP ;
+L93:
+        LDG.E.64 R46, desc[UR36][R46.64] ;
+        LDG.E.U16.CONSTANT R0, desc[UR36][R46.64+0x50] ;
+        SHF.R.U32.HI R0, RZ, 0x3, R0 ;
+        PRMT R2, R0, 0x9910, RZ ;
+        ISETP.NE.AND P0, PT, R2, RZ, PT ;
+        @!P0 BRA L103 ;
+        LOP3.LUT R5, R0, 0xffff, RZ, 0xc0, !PT ;
+        IADD3 R0, P1, R5.reuse, -0x1, RZ ;
+        LOP3.LUT R10, R5, 0x3, RZ, 0xc0, !PT ;
+        ISETP.GE.U32.AND P0, PT, R0, 0x3, PT ;
+        IMAD.X R0, RZ, RZ, -0x1, P1 ;
+        ISETP.GE.U32.AND.EX P0, PT, R0, RZ, PT, P0 ;
+        IMAD.MOV.U32 R0, RZ, RZ, RZ ;
+        @!P0 BRA L100 ;
+        IADD3 R5, P1, R5, -R10, RZ ;
+        BSSY B0, L100 ;
+        IMAD.MOV.U32 R0, RZ, RZ, RZ ;
+        ISETP.GT.U32.AND P0, PT, R5, RZ, PT ;
+        IMAD.X R7, RZ, RZ, -0x1, P1 ;
+        ISETP.GT.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L98 ;
+        ISETP.GT.U32.AND P1, PT, R5, 0xc, PT ;
+        PLOP3.LUT P0, PT, PT, PT, PT, 0x80, 0x0 ;
+        ISETP.GT.AND.EX P1, PT, R7, RZ, PT, P1 ;
+        @!P1 BRA L95 ;
+        BSSY B1, L95 ;
+        PLOP3.LUT P0, PT, PT, PT, PT, 0x8, 0x0 ;
+L94:
+        VIADD R4, R0.reuse, 0x4 ;
+        IADD3 R5, P1, R5, -0x10, RZ ;
+        VIADD R6, R0.reuse, 0x8 ;
+        VIADD R8, R0.reuse, 0xc ;
+        IADD3.X R7, R7, -0x1, RZ, P1, !PT ;
+        IMAD R2, R0, 0x8, R1.reuse ;
+        ISETP.GT.U32.AND P1, PT, R5, 0xc, PT ;
+        IMAD R4, R4, 0x8, R1.reuse ;
+        IMAD R6, R6, 0x8, R1.reuse ;
+        STL.64 [R2], RZ ;
+        IMAD R8, R8, 0x8, R1 ;
+        ISETP.GT.AND.EX P1, PT, R7, RZ, PT, P1 ;
+        VIADD R0, R0, 0x10 ;
+        STL.64 [R2+0x8], RZ ;
+        STL.64 [R2+0x10], RZ ;
+        STL.64 [R2+0x18], RZ ;
+        STL.64 [R4], RZ ;
+        STL.64 [R4+0x8], RZ ;
+        STL.64 [R4+0x10], RZ ;
+        STL.64 [R4+0x18], RZ ;
+        STL.64 [R6], RZ ;
+        STL.64 [R6+0x8], RZ ;
+        STL.64 [R6+0x10], RZ ;
+        STL.64 [R6+0x18], RZ ;
+        STL.64 [R8], RZ ;
+        STL.64 [R8+0x8], RZ ;
+        STL.64 [R8+0x10], RZ ;
+        STL.64 [R8+0x18], RZ ;
+        @P1 BRA L94 ;
+        BSYNC B1 ;
+L95:
+        ISETP.GT.U32.AND P1, PT, R5, 0x4, PT ;
+        BSSY B1, L97 ;
+        ISETP.GT.AND.EX P1, PT, R7, RZ, PT, P1 ;
+        @!P1 BRA L96 ;
+        VIADD R4, R0.reuse, 0x4 ;
+        IADD3 R5, P1, R5, -0x8, RZ ;
+        IMAD R2, R0, 0x8, R1.reuse ;
+        PLOP3.LUT P0, PT, PT, PT, PT, 0x8, 0x0 ;
+        IMAD R4, R4, 0x8, R1 ;
+        IADD3.X R7, R7, -0x1, RZ, P1, !PT ;
+        VIADD R0, R0, 0x8 ;
+        STL.64 [R2], RZ ;
+        STL.64 [R2+0x8], RZ ;
+        STL.64 [R2+0x10], RZ ;
+        STL.64 [R2+0x18], RZ ;
+        STL.64 [R4], RZ ;
+        STL.64 [R4+0x8], RZ ;
+        STL.64 [R4+0x10], RZ ;
+        STL.64 [R4+0x18], RZ ;
+L96:
+        BSYNC B1 ;
+L97:
+        ISETP.NE.U32.AND P1, PT, R5, RZ, PT ;
+        ISETP.NE.OR.EX P0, PT, R7, RZ, P0, P1 ;
+        @!P0 BRA L99 ;
+L98:
+        IMAD R2, R0.reuse, 0x8, R1 ;
+        IADD3 R5, P0, R5, -0x4, RZ ;
+        VIADD R0, R0, 0x4 ;
+        STL.64 [R2], RZ ;
+        IADD3.X R7, R7, -0x1, RZ, P0, !PT ;
+        ISETP.NE.U32.AND P0, PT, R5, RZ, PT ;
+        STL.64 [R2+0x8], RZ ;
+        ISETP.NE.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        STL.64 [R2+0x10], RZ ;
+        STL.64 [R2+0x18], RZ ;
+        @P0 BRA L98 ;
+L99:
+        BSYNC B0 ;
+L100:
+        ISETP.NE.U32.AND P0, PT, R10, RZ, PT ;
+        BSSY B0, L103 ;
+        ISETP.NE.AND.EX P0, PT, RZ, RZ, PT, P0 ;
+        @!P0 BRA L102 ;
+        IADD3 R2, P0, RZ, -R10, RZ ;
+        IMAD R4, R0, 0x8, R1 ;
+        IMAD.X R0, RZ, RZ, -0x1, P0 ;
+L101:
+        IADD3 R2, P0, R2, 0x1, RZ ;
+        STL.64 [R4], RZ ;
+        IMAD.X R0, RZ, RZ, R0, P0 ;
+        ISETP.NE.U32.AND P0, PT, R2, RZ, PT ;
+        VIADD R4, R4, 0x8 ;
+        ISETP.NE.AND.EX P0, PT, R0, RZ, PT, P0 ;
+        @P0 BRA L101 ;
+L102:
+        BSYNC B0 ;
+L103:
+        LDL.U16 R2, [R1+0x2] ;
+        LDG.E.U8.CONSTANT R4, desc[UR36][R46.64+0x40] ;
+        PRMT R8, R17, 0x7610, R8 ;
+        SHF.R.U32.HI R17, RZ, 0x10, R17 ;
+        PRMT R8, R8, 0x5410, R17 ;
+        STL [R1+0x1c], R8 ;
+        PRMT R0, R2.reuse, 0x7770, RZ ;
+        PRMT R2, R2, 0x7771, RZ ;
+        LOP3.LUT R5, R0, 0x70, RZ, 0xc0, !PT ;
+        IMAD.IADD R25, R1, 0x1, R4 ;
+        LOP3.LUT R0, R2, 0x1c, RZ, 0xfc, !PT ;
+        LOP3.LUT R5, R5, 0xff82, RZ, 0xfc, !PT ;
+        SHF.R.U32.HI R2, RZ, 0x10, R14 ;
+        PRMT R6, R0, 0x7604, R5 ;
+        STL.U16 [R1+0x1a], R2 ;
+        PRMT R7, R14, 0x5410, R6 ;
+        STL [R1], R7 ;
+        STL [R25+0x4], R36 ;
+        STL [R25+0x8], R30 ;
+        STL [R25+0xc], R31 ;
+        LDL.U8 R4, [R1+0xe] ;
+        REDUX.OR UR4, R3 ;
+        R2UR P0, URZ, R3 ;
+        STL.U16 [R1+0xc], R26 ;
+        STL.U16 [R1+0x4], R24 ;
+        STL [R1+0x10], R22 ;
+        LOP3.LUT R4, R4, 0xfc, RZ, 0xc0, !PT ;
+        LOP3.LUT R4, R4, 0x1, RZ, 0xfc, !PT ;
+        STL.U8 [R1+0xe], R4 ;
+        @!P0 BRA.DIV UR4, L205 ;
+        MATCH.ANY.U64 R2, R46 ;
+L104:
+        LD.E R24, desc[UR36][R46.64+0x18] ;
+        BREV R12, R2 ;
+        REDUX.OR UR4, R3 ;
+        R2UR P1, URZ, R3 ;
+        LOP3.LUT P2, RZ, R19, R2, RZ, 0xc0, !PT ;
+        POPC R27, R2 ;
+        P2R R30, PR, RZ, 0x4 ;
+        FLO.U32.SH R12, R12 ;
+        ISETP.NE.AND P0, PT, R12, R21, PT ;
+        @!P1 BRA.DIV UR4, L208 ;
+L105:
+        ULDC UR4, c[0x0][0x20] ;
+        BSSY B0, L108 ;
+        VIADD R26, R46, -UR4 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        @P2 BRA L107 ;
+        QSPC.E.L P0, RZ, [R46+0x28] ;
+        @P0 BRA L106 ;
+        VOTE.ANY R3, PT, PT ;
+        ISETP.EQ.U32.AND P0, PT, R3, -0x1, PT ;
+        @!P0 ATOM.E.ADD.STRONG.GPU PT, R13, desc[UR36][R46.64+0x28], R27 ;
+        @!P0 BRA L107 ;
+        SHFL.UP P0, R4, R27, 0x1, RZ ;
+        IMAD.MOV.U32 R3, RZ, RZ, R27 ;
+        ISETP.EQ.U32.AND P1, PT, R21, 0x1f, PT ;
+        @P0 IMAD.IADD.U32 R3, R27, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x2, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x4, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x8, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        SHFL.UP P0, R4, R3, 0x10, RZ ;
+        @P0 IMAD.IADD.U32 R3, R3, 0x1, R4 ;
+        @P1 ATOM.E.ADD.STRONG.GPU PT, R4, desc[UR36][R46.64+0x28], R3 ;
+        SHFL.UP P0, R6, R3, 0x1, RZ ;
+        SHFL.IDX PT, R13, R4, 0x1f, 0x1f ;
+        @P0 IMAD.IADD.U32 R13, R13, 0x1, R6 ;
+        BRA L107 ;
+L106:
+        LDL R8, [R26+0x28] ;
+        LDL.U8 R3, [R26+0x28] ;
+        LDL.U8 R4, [R26+0x29] ;
+        LDL.U8 R6, [R26+0x2a] ;
+        LDL.U8 R7, [R26+0x2b] ;
+        IMAD.IADD R9, R27, 0x1, R8 ;
+        STL [R26+0x28], R9 ;
+        NANOSLEEP RZ ;
+        PRMT R3, R4, 0x7604, R3 ;
+        PRMT R6, R7, 0x7604, R6 ;
+        PRMT R13, R6, 0x1054, R3 ;
+L107:
+        BSYNC B0 ;
+L108:
+        MATCH.ANY R3, R2 ;
+        REDUX.OR UR4, R2 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R2, UR5, R3, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L211 ;
+        SHFL.IDX PT, R18, R13, R12, 0x1f ;
+L109:
+        LOP3.LUT R19, R19, R2, RZ, 0xc0, !PT ;
+        ISETP.NE.AND P0, PT, R2, RZ, PT ;
+        POPC R31, R19 ;
+        @!P0 EXIT ;
+        QSPC.E.L P1, RZ, [R46+0x20] ;
+        LOP3.LUT R5, R5, 0xff, RZ, 0xc0, !PT ;
+        IMAD.IADD R33, R18, 0x1, R31 ;
+        LOP3.LUT R0, R0, 0xffff, RZ, 0xc0, !PT ;
+        QSPC.E.L P0, RZ, [R46+0x24] ;
+        LOP3.LUT R35, R35, 0xffffff, RZ, 0xc0, !PT ;
+        IMAD.MOV.U32 R32, RZ, RZ, RZ ;
+        PRMT R0, R0, 0x7604, R5 ;
+        LOP3.LUT R0, R0, 0xffff, RZ, 0xc0, !PT ;
+        SHF.R.U32.HI R19, RZ, 0x8, R0 ;
+        P2R R34, PR, RZ, 0x2 ;
+        P2R R36, PR, RZ, 0x1 ;
+L110:
+        ISETP.NE.AND P0, PT, R30, RZ, PT ;
+        IMAD.IADD R39, R18, 0x1, R32 ;
+        VIADDMNMX R0, R27, -R32, R24, PT ;
+        YIELD ;
+        BSSY B0, L122 ;
+        IMAD.IADD R37, R0, 0x1, R39 ;
+        @P0 BRA L121 ;
+        SHF.R.U32.HI R3, RZ, 0x18, R39.reuse ;
+        SHF.R.U32.HI R11, RZ, 0x10, R39.reuse ;
+        SHF.R.U32.HI R13, RZ, 0x8, R39 ;
+L111:
+        ISETP.NE.AND P1, PT, R34, RZ, PT ;
+        @!P1 LD.E.STRONG.GPU R4, desc[UR36][R46.64+0x20] ;
+        YIELD ;
+        @!P1 BRA L112 ;
+        LDL.U8 R4, [R26+0x20] ;
+        LDL.U8 R5, [R26+0x21] ;
+        LDL.U8 R6, [R26+0x22] ;
+        LDL.U8 R7, [R26+0x23] ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R4, R7, 0x1054, R4 ;
+L112:
+        IMAD.IADD R5, R37, 0x1, -R4 ;
+        ISETP.GT.U32.AND P0, PT, R5, R24, PT ;
+        @!P0 BRA L121 ;
+        ISETP.NE.AND P2, PT, R36, RZ, PT ;
+        @!P2 LD.E.STRONG.GPU R4, desc[UR36][R46.64+0x24] ;
+        @!P2 CCTL.IVALL ;
+        @!P2 BRA L113 ;
+        LDL.U8 R4, [R26+0x24] ;
+        LDL.U8 R5, [R26+0x25] ;
+        LDL.U8 R6, [R26+0x26] ;
+        LDL.U8 R7, [R26+0x27] ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R4, R7, 0x1054, R4 ;
+L113:
+        ISETP.NE.AND P0, PT, R4, R39, PT ;
+        BSSY B1, L120 ;
+        @P0 BRA L119 ;
+        @!P1 LD.E.STRONG.GPU R4, desc[UR36][R46.64+0x20] ;
+        @!P1 BRA L114 ;
+        LDL.U8 R4, [R26+0x20] ;
+        LDL.U8 R5, [R26+0x21] ;
+        LDL.U8 R6, [R26+0x22] ;
+        LDL.U8 R7, [R26+0x23] ;
+        NANOSLEEP RZ ;
+        PRMT R4, R5, 0x7604, R4 ;
+        PRMT R7, R7, 0x7604, R6 ;
+        PRMT R4, R7, 0x1054, R4 ;
+L114:
+        ISETP.NE.AND P0, PT, R39, R4, PT ;
+        @!P0 BRA L119 ;
+        IMAD.IADD R8, R39, 0x1, -R4 ;
+        IMAD.MOV.U32 R9, RZ, RZ, RZ ;
+        ATOM.E.ADD.64.STRONG.GPU P0, RZ, desc[UR36][R44.64+0x28], R8 ;
+        BSSY B2, L118 ;
+        @P0 BRA L117 ;
+        QSPC.E.S P0, RZ, [R44+0x28] ;
+        @!P0 BRA L116 ;
+        IMAD.MOV.U32 R4, RZ, RZ, R44 ;
+        MOV R15, R4 ;
+L115:
+        LDS.64 R4, [R15+0x28] ;
+        IADD3 R6, P0, R8, R4, RZ ;
+        IMAD.X R7, RZ, RZ, R5, P0 ;
+        ATOMS.CAST.SPIN.64 R6, [R15+0x28], R4, R6 ;
+        ISETP.EQ.U32.AND P0, PT, R6, 0x1, PT ;
+        ISETP.EQ.U32.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L115 ;
+        BRA L117 ;
+L116:
+        LD.E.64 R4, desc[UR36][R44.64+0x28] ;
+        IADD3 R8, P0, R8, R4, RZ ;
+        IMAD.X R9, RZ, RZ, R5, P0 ;
+        ST.E.64 desc[UR36][R44.64+0x28], R8 ;
+L117:
+        BSYNC B2 ;
+L118:
+        ISETP.NE.AND P0, PT, R34, RZ, PT ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!P0 MEMBAR.ALL.CTA ;
+        @!P0 MEMBAR.ALL.GPU ;
+        @!P0 ERRBAR;
+        @!P0 CGAERRBAR ;
+        @!P0 ST.E.STRONG.GPU desc[UR36][R46.64+0x20], R39 ;
+        @P0 STL.U8 [R26+0x20], R39 ;
+        @P0 STL.U8 [R26+0x23], R3 ;
+        @P0 STL.U8 [R26+0x22], R11 ;
+        @P0 STL.U8 [R26+0x21], R13 ;
+L119:
+        BSYNC B1 ;
+L120:
+        BRA L111 ;
+L121:
+        BSYNC B0 ;
+L122:
+        MATCH.ANY R3, R2 ;
+        REDUX.OR UR4, R2 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R2, UR5, R3, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L214 ;
+        NOP ;
+L123:
+        IMAD.IADD R0, R0, 0x1, R32 ;
+        BSSY B8, L131 ;
+        ISETP.GE.AND P0, PT, R31, R0, PT ;
+        ISETP.LT.OR P0, PT, R31, R32, P0 ;
+        @P0 BRA L130 ;
+        LDL.U8 R0, [R1+0x2] ;
+        IMAD.MOV.U32 R4, RZ, RZ, 0x1 ;
+        LD.E R22, desc[UR36][R46.64+0x14] ;
+        BSSY B7, L129 ;
+        BSSY B6, L127 ;
+        STL.U16 [R1+0x6], R4 ;
+        LOP3.LUT R0, R0, 0xf, RZ, 0xc0, !PT ;
+        VIADD R3, R0, 0xffffffff ;
+        LOP3.LUT R3, R3, 0xffff, RZ, 0xc0, !PT ;
+        ISETP.GE.U32.AND P0, PT, R3, 0x2, PT ;
+        @!P0 BRA L125 ;
+        ISETP.NE.AND P0, PT, R0, RZ, PT ;
+        @P0 BREAK B6 ;
+        @!P0 BRA L124 ;
+        MOV R16, 0x0 ;
+        ULDC.64 UR4, c[0x4][0x20] ;
+        ULDC.64 UR6, c[0x4][0x8] ;
+        IMAD.U32 R4, RZ, RZ, UR4 ;
+        IMAD.U32 R5, RZ, RZ, UR5 ;
+        LDC.64 R16, c[0x4][R16] ;
+        ULDC.64 UR4, c[0x4][0x28] ;
+        IMAD.MOV.U32 R12, RZ, RZ, 0x1 ;
+        IMAD.U32 R6, RZ, RZ, UR4 ;
+        IMAD.U32 R7, RZ, RZ, UR5 ;
+        IMAD.U32 R10, RZ, RZ, UR6 ;
+        IMAD.U32 R11, RZ, RZ, UR7 ;
+        IMAD.MOV.U32 R8, RZ, RZ, 0x232 ;
+        IMAD.MOV.U32 R13, RZ, RZ, RZ ;
+        LEPC R20, 0x5240 ;
+        CALL.ABS.NOINC R16 ;
+        BRA L128 ;
+L124:
+        LDG.E.U8.CONSTANT R0, desc[UR36][R46.64+0x42] ;
+        BRA L126 ;
+L125:
+        LDG.E.U8.CONSTANT R0, desc[UR36][R46.64+0x41] ;
+        STL [R25], R23 ;
+L126:
+        BSYNC B6 ;
+L127:
+        LOP3.LUT R0, R0, 0xff, RZ, 0xc0, !PT ;
+        IMAD.IADD R3, R1, 0x1, R0 ;
+        LDL R0, [R3+0x4] ;
+        STL [R3], R23 ;
+        STL [R3+0x8], R28 ;
+        STL [R3+0xc], R29 ;
+        LOP3.LUT R0, R35, 0xff000000, R0, 0xf8, !PT ;
+        STL [R3+0x4], R0 ;
+        LDL.U8 R19, [R1+0x3] ;
+L128:
+        BSYNC B7 ;
+L129:
+        SHF.R.U32.HI R0, RZ, R22, R33 ;
+        LOP3.LUT R19, R19, 0xfffe, RZ, 0xc0, !PT ;
+        LOP3.LUT R0, R19, 0x1, R0, 0xf8, !PT ;
+        PRMT R19, R0, 0x7610, R19 ;
+        STL.U8 [R1+0x3], R0 ;
+L130:
+        BSYNC B8 ;
+L131:
+        MATCH.ANY R3, R2 ;
+        REDUX.OR UR4, R2 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R2, UR5, R3, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L217 ;
+        NOP ;
+L132:
+        ISETP.NE.AND P0, PT, R30, RZ, PT ;
+        BSSY B0, L143 ;
+        @P0 BRA L142 ;
+        BSSY B1, L135 ;
+L133:
+        ISETP.NE.AND P0, PT, R36, RZ, PT ;
+        @!P0 LD.E.STRONG.GPU R0, desc[UR36][R46.64+0x24] ;
+        YIELD ;
+        @!P0 BRA L134 ;
+        LDL.U8 R0, [R26+0x24] ;
+        LDL.U8 R3, [R26+0x25] ;
+        LDL.U8 R4, [R26+0x26] ;
+        LDL.U8 R5, [R26+0x27] ;
+        NANOSLEEP RZ ;
+        PRMT R0, R3, 0x7604, R0 ;
+        PRMT R5, R5, 0x7604, R4 ;
+        PRMT R0, R5, 0x1054, R0 ;
+L134:
+        ISETP.NE.AND P0, PT, R0, R39, PT ;
+        @P0 BRA L133 ;
+        BSYNC B1 ;
+L135:
+        ISETP.NE.AND P1, PT, R34, RZ, PT ;
+        @!P1 LD.E.STRONG.GPU R0, desc[UR36][R46.64+0x20] ;
+        @!P1 BRA L136 ;
+        LDL.U8 R0, [R26+0x20] ;
+        LDL.U8 R3, [R26+0x21] ;
+        LDL.U8 R4, [R26+0x22] ;
+        LDL.U8 R5, [R26+0x23] ;
+        NANOSLEEP RZ ;
+        PRMT R0, R3, 0x7604, R0 ;
+        PRMT R5, R5, 0x7604, R4 ;
+        PRMT R0, R5, 0x1054, R0 ;
+L136:
+        IMAD.IADD R8, R37, 0x1, -R0 ;
+        IMAD.MOV.U32 R9, RZ, RZ, RZ ;
+        ATOM.E.ADD.64.STRONG.GPU P0, RZ, desc[UR36][R44.64+0x28], R8 ;
+        BSSY B1, L140 ;
+        @P0 BRA L139 ;
+        QSPC.E.S P0, RZ, [R44+0x28] ;
+        @!P0 BRA L138 ;
+        IMAD.MOV.U32 R4, RZ, RZ, R44 ;
+        MOV R3, R4 ;
+L137:
+        LDS.64 R4, [R3+0x28] ;
+        IADD3 R6, P0, R8, R4, RZ ;
+        IMAD.X R7, RZ, RZ, R5, P0 ;
+        ATOMS.CAST.SPIN.64 R6, [R3+0x28], R4, R6 ;
+        ISETP.EQ.U32.AND P0, PT, R6, 0x1, PT ;
+        ISETP.EQ.U32.AND.EX P0, PT, R7, RZ, PT, P0 ;
+        @!P0 BRA L137 ;
+        BRA L139 ;
+L138:
+        LD.E.64 R4, desc[UR36][R44.64+0x28] ;
+        IADD3 R8, P0, R8, R4, RZ ;
+        IMAD.X R9, RZ, RZ, R5, P0 ;
+        ST.E.64 desc[UR36][R44.64+0x28], R8 ;
+L139:
+        BSYNC B1 ;
+L140:
+        ISETP.NE.AND P0, PT, R34, RZ, PT ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!P0 MEMBAR.ALL.CTA ;
+        @!P0 MEMBAR.ALL.GPU ;
+        @!P0 ERRBAR;
+        @!P0 CGAERRBAR ;
+        @!P0 ST.E.STRONG.GPU desc[UR36][R46.64+0x20], R37 ;
+        @!P0 BRA L141 ;
+        SHF.R.U32.HI R3, RZ, 0x18, R37.reuse ;
+        STL.U8 [R26+0x20], R37 ;
+        SHF.R.U32.HI R5, RZ, 0x10, R37.reuse ;
+        SHF.R.U32.HI R7, RZ, 0x8, R37 ;
+        STL.U8 [R26+0x23], R3 ;
+        STL.U8 [R26+0x22], R5 ;
+        STL.U8 [R26+0x21], R7 ;
+L141:
+        ISETP.NE.AND P0, PT, R36, RZ, PT ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!PT LDS RZ, [RZ] ;
+        @!P0 MEMBAR.ALL.CTA ;
+        @!P0 MEMBAR.ALL.GPU ;
+        @!P0 ERRBAR;
+        @!P0 CGAERRBAR ;
+        @!P0 ST.E.STRONG.GPU desc[UR36][R46.64+0x24], R37 ;
+        @!P0 BRA L142 ;
+        SHF.R.U32.HI R3, RZ, 0x18, R37.reuse ;
+        STL.U8 [R26+0x24], R37 ;
+        SHF.R.U32.HI R5, RZ, 0x10, R37.reuse ;
+        SHF.R.U32.HI R7, RZ, 0x8, R37 ;
+        STL.U8 [R26+0x27], R3 ;
+        STL.U8 [R26+0x26], R5 ;
+        STL.U8 [R26+0x25], R7 ;
+L142:
+        BSYNC B0 ;
+L143:
+        MATCH.ANY R3, R2 ;
+        REDUX.OR UR4, R2 ;
+        VOTEU.ANY UR5, UPT, PT ;
+        LOP3.LUT P0, RZ, R2, UR5, R3, 0x40, !PT ;
+        @!P0 BRA.DIV UR4, L220 ;
+        NOP ;
+L144:
+        IMAD.IADD R32, R24, 0x1, R32 ;
+        ISETP.GT.AND P0, PT, R27, R32, PT ;
+        @P0 BRA L110 ;
+        EXIT ;
+L145:
+        BSSY B0, L147 ;
+        IMAD.MOV.U32 R12, RZ, RZ, R44 ;
+        IMAD.MOV.U32 R13, RZ, RZ, R45 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L146 ;
+        MATCH.ANY.U64 R14, R12 ;
+        ENDCOLLECTIVE ;
+L146:
+        BSYNC B0 ;
+L147:
+        IMAD.MOV.U32 R0, RZ, RZ, R14 ;
+        BRA L3 ;
+L148:
+        BSSY B0, L150 ;
+        PLOP3.LUT P6, PT, P0, PT, PT, 0x8, 0x0 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L149 ;
+        VOTE.ANY R14, PT, P6 ;
+        ENDCOLLECTIVE ;
+L149:
+        BSYNC B0 ;
+L150:
+        BRA L4 ;
+L151:
+        BSSY B0, L153 ;
+        IMAD.MOV.U32 R13, RZ, RZ, R17 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R0 ;
+        WARPSYNC.COLLECTIVE R15, L152 ;
+        MATCH.ANY R14, R13 ;
+        ENDCOLLECTIVE ;
+L152:
+        BSYNC B0 ;
+L153:
+        IMAD.MOV.U32 R9, RZ, RZ, R14 ;
+        BRA L5 ;
+L154:
+        BSSY B0, L156 ;
+        PLOP3.LUT P6, PT, P0, PT, PT, 0x8, 0x0 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R0 ;
+        WARPSYNC.COLLECTIVE R15, L155 ;
+        VOTE.ANY R14, PT, P6 ;
+        ENDCOLLECTIVE ;
+L155:
+        BSYNC B0 ;
+L156:
+        BRA L6 ;
+L157:
+        BSSY B0, L159 ;
+        IMAD.MOV.U32 R11, RZ, RZ, 0x1f ;
+        IMAD.MOV.U32 R15, RZ, RZ, R9 ;
+        WARPSYNC.COLLECTIVE R15, L158 ;
+        SHFL.IDX P6, R14, R13, R12, R11 ;
+        ENDCOLLECTIVE ;
+L158:
+        BSYNC B0 ;
+L159:
+        BRA L10 ;
+L160:
+        BSSY B0, L162 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R9 ;
+        WARPSYNC.COLLECTIVE R15, L161 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L161:
+        BSYNC B0 ;
+L162:
+        BRA L16 ;
+L163:
+        BSSY B0, L165 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L164 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L164:
+        BSYNC B0 ;
+L165:
+        BRA L17 ;
+L166:
+        BSSY B0, L168 ;
+        IMAD.MOV.U32 R12, RZ, RZ, R50 ;
+        IMAD.MOV.U32 R13, RZ, RZ, R51 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L167 ;
+        MATCH.ANY.U64 R14, R12 ;
+        ENDCOLLECTIVE ;
+L167:
+        BSYNC B0 ;
+L168:
+        IMAD.MOV.U32 R25, RZ, RZ, R14 ;
+        BRA L26 ;
+L169:
+        BSSY B0, L171 ;
+        PLOP3.LUT P6, PT, P0, PT, PT, 0x8, 0x0 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L170 ;
+        VOTE.ANY R14, PT, P6 ;
+        ENDCOLLECTIVE ;
+L170:
+        BSYNC B0 ;
+L171:
+        BRA L27 ;
+L172:
+        BSSY B0, L174 ;
+        IMAD.MOV.U32 R11, RZ, RZ, 0x1f ;
+        IMAD.MOV.U32 R15, RZ, RZ, R25 ;
+        WARPSYNC.COLLECTIVE R15, L173 ;
+        SHFL.IDX P6, R14, R13, R12, R11 ;
+        ENDCOLLECTIVE ;
+L173:
+        BSYNC B0 ;
+L174:
+        IMAD.MOV.U32 R23, RZ, RZ, R14 ;
+        BRA L31 ;
+L175:
+        BSSY B0, L177 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R25 ;
+        WARPSYNC.COLLECTIVE R15, L176 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L176:
+        BSYNC B0 ;
+L177:
+        BRA L48 ;
+L178:
+        BSSY B0, L180 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R25 ;
+        WARPSYNC.COLLECTIVE R15, L179 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L179:
+        BSYNC B0 ;
+L180:
+        BRA L58 ;
+L181:
+        BSSY B0, L183 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R25 ;
+        WARPSYNC.COLLECTIVE R15, L182 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L182:
+        BSYNC B0 ;
+L183:
+        BRA L71 ;
+L184:
+        BSSY B0, L186 ;
+        IMAD.MOV.U32 R12, RZ, RZ, R44 ;
+        IMAD.MOV.U32 R13, RZ, RZ, R45 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L185 ;
+        MATCH.ANY.U64 R14, R12 ;
+        ENDCOLLECTIVE ;
+L185:
+        BSYNC B0 ;
+L186:
+        IMAD.MOV.U32 R2, RZ, RZ, R14 ;
+        BRA L79 ;
+L187:
+        BSSY B0, L189 ;
+        PLOP3.LUT P6, PT, P0, PT, PT, 0x8, 0x0 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L188 ;
+        VOTE.ANY R14, PT, P6 ;
+        ENDCOLLECTIVE ;
+L188:
+        BSYNC B0 ;
+L189:
+        BRA L80 ;
+L190:
+        BSSY B0, L192 ;
+        IMAD.MOV.U32 R13, RZ, RZ, R17 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R2 ;
+        WARPSYNC.COLLECTIVE R15, L191 ;
+        MATCH.ANY R14, R13 ;
+        ENDCOLLECTIVE ;
+L191:
+        BSYNC B0 ;
+L192:
+        IMAD.MOV.U32 R0, RZ, RZ, R14 ;
+        BRA L81 ;
+L193:
+        BSSY B0, L195 ;
+        PLOP3.LUT P6, PT, P0, PT, PT, 0x8, 0x0 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R2 ;
+        WARPSYNC.COLLECTIVE R15, L194 ;
+        VOTE.ANY R14, PT, P6 ;
+        ENDCOLLECTIVE ;
+L194:
+        BSYNC B0 ;
+L195:
+        BRA L82 ;
+L196:
+        BSSY B0, L198 ;
+        IMAD.MOV.U32 R11, RZ, RZ, 0x1f ;
+        IMAD.MOV.U32 R15, RZ, RZ, R0 ;
+        WARPSYNC.COLLECTIVE R15, L197 ;
+        SHFL.IDX P6, R14, R13, R12, R11 ;
+        ENDCOLLECTIVE ;
+L197:
+        BSYNC B0 ;
+L198:
+        BRA L86 ;
+L199:
+        BSSY B0, L201 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R0 ;
+        WARPSYNC.COLLECTIVE R15, L200 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L200:
+        BSYNC B0 ;
+L201:
+        BRA L92 ;
+L202:
+        BSSY B0, L204 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L203 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L203:
+        BSYNC B0 ;
+L204:
+        BRA L93 ;
+L205:
+        BSSY B0, L207 ;
+        IMAD.MOV.U32 R12, RZ, RZ, R46 ;
+        IMAD.MOV.U32 R13, RZ, RZ, R47 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L206 ;
+        MATCH.ANY.U64 R14, R12 ;
+        ENDCOLLECTIVE ;
+L206:
+        BSYNC B0 ;
+L207:
+        IMAD.MOV.U32 R2, RZ, RZ, R14 ;
+        BRA L104 ;
+L208:
+        BSSY B0, L210 ;
+        PLOP3.LUT P6, PT, P0, PT, PT, 0x8, 0x0 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R3 ;
+        WARPSYNC.COLLECTIVE R15, L209 ;
+        VOTE.ANY R14, PT, P6 ;
+        ENDCOLLECTIVE ;
+L209:
+        BSYNC B0 ;
+L210:
+        BRA L105 ;
+L211:
+        BSSY B0, L213 ;
+        IMAD.MOV.U32 R11, RZ, RZ, 0x1f ;
+        IMAD.MOV.U32 R15, RZ, RZ, R2 ;
+        WARPSYNC.COLLECTIVE R15, L212 ;
+        SHFL.IDX P6, R14, R13, R12, R11 ;
+        ENDCOLLECTIVE ;
+L212:
+        BSYNC B0 ;
+L213:
+        IMAD.MOV.U32 R18, RZ, RZ, R14 ;
+        BRA L109 ;
+L214:
+        BSSY B0, L216 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R2 ;
+        WARPSYNC.COLLECTIVE R15, L215 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L215:
+        BSYNC B0 ;
+L216:
+        BRA L123 ;
+L217:
+        BSSY B0, L219 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R2 ;
+        WARPSYNC.COLLECTIVE R15, L218 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L218:
+        BSYNC B0 ;
+L219:
+        BRA L132 ;
+L220:
+        BSSY B0, L222 ;
+        IMAD.MOV.U32 R15, RZ, RZ, R2 ;
+        WARPSYNC.COLLECTIVE R15, L221 ;
+        NOP ;
+        ENDCOLLECTIVE ;
+L221:
+        BSYNC B0 ;
+L222:
+        BRA L144 ;
+L223:
+        BRA L223;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+        NOP;
+		..........
+
+
