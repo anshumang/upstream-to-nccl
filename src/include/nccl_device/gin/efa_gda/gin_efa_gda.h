@@ -97,6 +97,166 @@ NCCL_DEVICE_INLINE static uint64_t hwCounterLoad(uint64_t* ptr) {
   return scopedAtomicLoad<cuda::thread_scope_system, Order>(ptr);
 }
 
+/* ── Thread-exclusive (NCCL_GIN_RESOURCE_SHARING_THREAD) post path: PoC ──
+ *
+ * Contract: exactly one CUDA thread posts to each QP of a THREAD-mode ncclGin
+ * instance until ownership is transferred by external CUDA synchronization.
+ * Nothing checks this. Under it, the SQ cursors (pc, wqes_posted,
+ * submitted_count) have one writer and use plain loads and stores; there is no
+ * warp grouping, reservation atomic, doorbell rendezvous, or handoff. The NIC
+ * completion counter is still read with a system-scope load.
+ *
+ * Other threads may still flush the QP (read-only) after synchronizing with the
+ * owner, e.g. a grid barrier. They see submitted_count exactly as the shared
+ * path maintains it. Mixing THREAD-mode posts with CTA/GPU-mode posts on the
+ * same QP is not supported: wqes_completed is not maintained.
+ *
+ * Doorbell batching: a post rings (publish fence + doorbell) unless the caller
+ * set ncclGinOptFlagsAggregateRequests or the post does not close a batch of
+ * NCCL_GIN_EFA_GDA_DOORBELL_BATCH WQEs on this QP. A deferred post issues
+ * neither a fence nor a doorbell; the ringing post's single system fence
+ * publishes all earlier WQEs because the same thread wrote them. No fence
+ * follows the doorbell: successive doorbells come from one thread to one MMIO
+ * address and stay in program order at system scope.
+ *
+ * The caller must make the last post before any flush, wait, or kernel exit
+ * ring, and must keep un-rung WQEs within the QP's max_batch. Validation builds
+ * (NCCL_GIN_EFA_GDA_THREAD_VALIDATE=1) assert both, plus the WQE geometry that
+ * the register-built image assumes. */
+#ifndef NCCL_GIN_EFA_GDA_DOORBELL_BATCH
+#define NCCL_GIN_EFA_GDA_DOORBELL_BATCH 1
+#endif
+#ifndef NCCL_GIN_EFA_GDA_THREAD_VALIDATE
+#define NCCL_GIN_EFA_GDA_THREAD_VALIDATE 0
+#endif
+
+static constexpr uint32_t kEfaGdaDoorbellBatch = NCCL_GIN_EFA_GDA_DOORBELL_BATCH;
+static_assert(kEfaGdaDoorbellBatch >= 1 && (kEfaGdaDoorbellBatch & (kEfaGdaDoorbellBatch - 1)) == 0,
+              "NCCL_GIN_EFA_GDA_DOORBELL_BATCH must be a power of two");
+
+/* Internal post flag: ring regardless of batching or the aggregate flag. Used
+ * where a deferred WQE would be unobservable (Get, PutValue, >1 GiB leading
+ * chunks). Occupies a bit no public ncclGinOptFlags value uses. */
+static constexpr uint32_t kEfaGdaForceRing = 1u << 31;
+
+/* ── Register-resident WQE image ────────────────────────────────────
+ *
+ * The RDMA write/read WQE as WqeBytes/8 little-endian 64-bit words with
+ * compile-time indices, so it lives in registers and goes straight to the SQ
+ * slot through MMIO stores. It reproduces EfaCudaWrBuilder::init_wr +
+ * set_remote_mem + set_remote + set_processing_hints(BURST_PPS_SENSITIVE) +
+ * set_sge / set_inline_data for the layouts the plugin publishes
+ * (efa_init_sq_wr_ctx_v0): remote_mem at byte 32, local_mem and RDMA-write
+ * inline data at byte 48. Field placement is pinned by static_asserts;
+ * validation builds compare the runtime wr_ctx offsets.
+ *
+ *   w0  [ 0.. 8)  req_id:16 | ctrl1:8 | ctrl2:8 | dest_qp_num:16 | length:16
+ *   w1  [ 8..16)  immediate_data:32 | ah:16 | ctrl3:8 | reserved:8
+ *   w2  [16..24)  qkey:32 | reserved2[0..4)
+ *   w3  [24..32)  reserved2[4..6) | req_id_ex.w[0..3)
+ *   w4  [32..40)  remote_mem.length:32 | remote_mem.rkey:32
+ *   w5  [40..48)  remote_mem.buf_addr
+ *   w6  [48..56)  local_mem.length:32 | local_mem.lkey:32   (or inline data)
+ *   w7  [56..64)  local_mem.buf_addr                         (or inline data)
+ *   w8..w15       zero (128-byte WQE only) */
+template <uint32_t WqeBytes>
+struct EfaGdaWqeRegs {
+  static_assert(WqeBytes == 64u || WqeBytes == 128u, "EFA WQE is 64 or 128 bytes");
+  static constexpr uint32_t Words = WqeBytes / 8u;
+  uint64_t w[Words];
+
+  /* Single-bit ctrl flags from efa_io_defs.h, spelled out because its BIT()
+   * macro is #undef'd at the end of efa_cuda_dp_impl.cuh. */
+  static constexpr uint64_t kCtrl1MetaDesc = 1ull << 7;  /* EFA_IO_TX_META_DESC_META_DESC  */
+  static constexpr uint64_t kCtrl1InlineMsg = 1ull << 5; /* EFA_IO_TX_META_DESC_INLINE_MSG */
+  static constexpr uint64_t kCtrl2Phase = 1ull << 0;     /* EFA_IO_TX_META_DESC_PHASE      */
+  static constexpr uint64_t kCtrl2First = 1ull << 2;     /* EFA_IO_TX_META_DESC_FIRST      */
+  static constexpr uint64_t kCtrl2Last = 1ull << 3;      /* EFA_IO_TX_META_DESC_LAST       */
+  static constexpr uint64_t kCtrl2CompReq = 1ull << 4;   /* EFA_IO_TX_META_DESC_COMP_REQ   */
+
+  static constexpr uint32_t kRemoteMemOffset = 32u;
+  static constexpr uint32_t kLocalMemOffset = 48u;
+  static constexpr uint32_t kWriteInlineOffset = 48u;
+
+  static_assert(sizeof(struct efa_io_tx_wqe) == 64u, "efa_io_tx_wqe must be 64 bytes");
+  static_assert(sizeof(struct efa_io_tx_wqe_128) == 128u, "efa_io_tx_wqe_128 must be 128 bytes");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, req_id) == 0u, "meta.req_id");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl1) == 2u, "meta.ctrl1");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl2) == 3u, "meta.ctrl2");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, dest_qp_num) == 4u, "meta.dest_qp_num");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, length) == 6u, "meta.length");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, immediate_data) == 8u, "meta.immediate_data");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ah) == 12u, "meta.ah");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, ctrl3) == 14u, "meta.ctrl3");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, qkey) == 16u, "meta.qkey");
+  static_assert(offsetof(struct efa_io_tx_meta_desc, req_id_ex) == 26u, "meta.req_id_ex");
+  static_assert(offsetof(struct efa_io_tx_wqe, data.rdma_req.remote_mem) == kRemoteMemOffset, "64B remote_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe, data.rdma_req.local_mem) == kLocalMemOffset, "64B local_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe_128, data.rdma_req.remote_mem) == kRemoteMemOffset,
+                "128B remote_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe_128, data.rdma_req.local_mem) == kLocalMemOffset, "128B local_mem");
+  static_assert(offsetof(struct efa_io_tx_wqe_128, data.rdma_req.inline_data) == kWriteInlineOffset,
+                "128B inline_data");
+  static_assert(offsetof(struct efa_io_remote_mem_addr, length) == 0u &&
+                  offsetof(struct efa_io_remote_mem_addr, rkey) == 4u &&
+                  offsetof(struct efa_io_remote_mem_addr, buf_addr_lo) == 8u,
+                "remote_mem layout");
+  static_assert(offsetof(struct efa_io_tx_buf_desc, length) == 0u && offsetof(struct efa_io_tx_buf_desc, lkey) == 4u &&
+                  offsetof(struct efa_io_tx_buf_desc, buf_addr_lo) == 8u,
+                "tx_buf_desc layout");
+
+  /* Everything except the payload descriptor and the phase bit. */
+  template <efaGdaRdmaOp op>
+  NCCL_DEVICE_INLINE void initRdma(uint64_t reqId, uint16_t ah, uint16_t qpn, uint32_t qkey, uint64_t dstAddr,
+                                   uint32_t dstRkey) {
+    constexpr uint32_t opType = (op == EFA_GDA_RDMA_READ) ? (uint32_t)EFA_IO_RDMA_READ : (uint32_t)EFA_IO_RDMA_WRITE;
+    constexpr uint64_t ctrl1 = kCtrl1MetaDesc | (opType & EFA_IO_TX_META_DESC_OP_TYPE_MASK);
+    constexpr uint64_t ctrl2 = kCtrl2First | kCtrl2Last | kCtrl2CompReq;
+    constexpr uint64_t ctrl3 =
+      (uint64_t)EFA_IO_PROCESSING_HINT_BURST_PPS_SENSITIVE & EFA_IO_TX_META_DESC_PROCESSING_HINTS_MASK;
+
+    w[0] = (reqId & 0xFFFFull) | (ctrl1 << 16) | (ctrl2 << 24) | ((uint64_t)qpn << 32);
+    w[1] = ((uint64_t)ah << 32) | (ctrl3 << 48);
+    w[2] = (uint64_t)qkey;
+    w[3] = reqId & ~0xFFFFull; /* req_id_ex.w[0..3) at bytes 26..32 */
+    w[4] = (uint64_t)dstRkey << 32;
+    w[5] = dstAddr;
+#pragma unroll
+    for (uint32_t i = 6; i < Words; i++) w[i] = 0;
+  }
+
+  /* One SGE: meta.length = 1 (SGL entry count), remote and local lengths = bytes. */
+  NCCL_DEVICE_INLINE void setSge(uint32_t lkey, uint64_t addr, uint32_t bytes) {
+    w[0] |= 1ull << 48;
+    w[4] |= (uint64_t)bytes;
+    w[6] = (uint64_t)bytes | ((uint64_t)(lkey & EFA_IO_TX_BUF_DESC_LKEY_MASK) << 32);
+    w[7] = addr;
+  }
+
+  /* RDMA-write inline payload of at most 8 bytes at byte 48 (128-byte WQE only). */
+  template <typename T>
+  NCCL_DEVICE_INLINE void setInline(T value) {
+    static_assert(sizeof(T) <= 8, "inline payload must fit one word");
+    static_assert(WqeBytes == 128u, "RDMA-write inline requires the 128-byte WQE");
+    uint64_t raw = 0;
+    memcpy(&raw, &value, sizeof(T));
+    w[0] |= (kCtrl1InlineMsg << 16) | ((uint64_t)sizeof(T) << 48);
+    w[4] |= (uint64_t)sizeof(T);
+    w[6] = raw;
+  }
+
+  NCCL_DEVICE_INLINE void setPhase(uint32_t phase) { w[0] |= ((uint64_t)phase & kCtrl2Phase) << 24; }
+
+  /* Relaxed system-scope MMIO stores in ascending address order, straight from
+   * registers. No fence; the ringing post publishes. */
+  NCCL_DEVICE_INLINE void storeMmio(uint64_t dstAddr) const {
+#pragma unroll
+    for (uint32_t i = 0; i < Words; i++) {
+      asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;" : : "l"(dstAddr + i * 8u), "l"(w[i]) : "memory");
+    }
+  }
+};
+
 /* ── ringDoorbell: shared doorbell-ring used by the post-path ring sites ─
 
  * Rings the SQ doorbell to `target`, then advances the bookkeeping cursors:
@@ -142,6 +302,11 @@ struct RdmaSgeEncoder {
     assert(ret == 0 && "EFA GDA: failed to encode RDMA SGE");
     (void)ret;
   }
+
+  template <uint32_t WqeBytes>
+  NCCL_DEVICE_INLINE void encodeRegs(EfaGdaWqeRegs<WqeBytes>& regs) const {
+    regs.setSge(lkey, addr, bytes);
+  }
 };
 
 /* PutValue carries its payload directly in the 128-byte RDMA-write WQE. */
@@ -156,7 +321,75 @@ struct PutValuePayloadEncoder {
     assert(ret == 0 && "EFA GDA: failed to encode inline PutValue");
     (void)ret;
   }
+
+  template <uint32_t WqeBytes>
+  NCCL_DEVICE_INLINE void encodeRegs(EfaGdaWqeRegs<WqeBytes>& regs) const {
+    regs.setInline(srcVal);
+  }
 };
+
+/* NIC-written counter load for the THREAD path: an explicit global-space
+ * relaxed system load. cuda::atomic_ref on a generic pointer adds an
+ * address-space query with a local-memory fallback (LDL + NANOSLEEP) that is
+ * never taken for a counter in device memory; this form is one LDG.STRONG.SYS. */
+NCCL_DEVICE_INLINE static uint32_t hwCounterLoadGlobalRelaxedLow(const uint64_t* ptr) {
+  uint64_t value;
+  asm volatile("ld.relaxed.sys.global.u64 %0, [%1];" : "=l"(value) : "l"(__cvta_generic_to_global(ptr)));
+  return (uint32_t)value;
+}
+
+/* ── postRdmaOpThread: thread-exclusive post (see the contract above) ── */
+
+template <efaGdaRdmaOp op, uint32_t WqeBytes, typename PayloadEncoder>
+NCCL_DEVICE_INLINE static void postRdmaOpThread(nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint16_t ah, uint16_t qpn,
+                                                uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
+                                                const PayloadEncoder& payloadEncoder, uint32_t optFlags) {
+  efa_cuda_qp* qp = (efa_cuda_qp*)ep->qp;
+
+  /* Producer cursor: plain read-and-increment in HBM. */
+  const uint32_t slot = qp->sq.wq.pc;
+  const uint32_t next = slot + 1u;
+
+#if NCCL_GIN_EFA_GDA_THREAD_VALIDATE
+  assert(qp->sq.wr_ctx.wqe_size == WqeBytes && "EFA GDA THREAD: endpoint WQE size differs from compile-time size");
+  assert(qp->sq.wr_ctx.remote_mem_offset == EfaGdaWqeRegs<WqeBytes>::kRemoteMemOffset &&
+         qp->sq.wr_ctx.local_mem_offset == EfaGdaWqeRegs<WqeBytes>::kLocalMemOffset &&
+         "EFA GDA THREAD: wr_ctx offsets differ from the register-built layout");
+  assert((WqeBytes != 128u || qp->sq.wr_ctx.write_inline_data_offset == EfaGdaWqeRegs<WqeBytes>::kWriteInlineOffset) &&
+         "EFA GDA THREAD: write-inline offset differs from the register-built layout");
+  assert(next - qp->sq.wq.wqes_posted <= qp->sq.wq.max_batch && "EFA GDA THREAD: un-rung WQEs exceed max_batch");
+#endif
+
+  /* SQ ring-overflow backpressure: in-flight = producer - NIC FI_WRITE counter,
+   * a 31-bit modular difference (see EFA_CNTR_MASK). */
+  const uint32_t sq_size = ep->sq_size;
+  while (((next - hwCounterLoadGlobalRelaxedLow(ep->local_cntr_value)) & EFA_CNTR_MASK) > sq_size) {
+    /* spin */
+  }
+  qp->sq.wq.pc = next;
+
+  const uint32_t sq_idx = slot & qp->sq.wq.queue_mask;
+  const uint32_t wqe_phase = (slot >> qp->sq.wq.queue_size_shift) & 1u;
+  const uint64_t slotAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.buf + sq_idx * WqeBytes);
+
+  EfaGdaWqeRegs<WqeBytes> regs;
+  regs.template initRdma<op>((uint64_t)threadIdx.x, ah, qpn, qkey, dstAddr, dstRkey);
+  payloadEncoder.template encodeRegs<WqeBytes>(regs);
+  regs.setPhase(wqe_phase);
+  regs.storeMmio(slotAddr);
+
+  const bool aggregate = (optFlags & ncclGinOptFlagsAggregateRequests) != 0;
+  const bool ring = (optFlags & kEfaGdaForceRing) != 0 || (!aggregate && (next & (kEfaGdaDoorbellBatch - 1u)) == 0u);
+  if (ring) {
+    /* One system fence publishes this thread's WQE stores since the last ring. */
+    cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+    const uint64_t dbAddr = (uint64_t)__cvta_generic_to_global(qp->sq.wq.db);
+    asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;" : : "l"(dbAddr), "r"(next) : "memory");
+    const uint32_t db_rung = qp->sq.wq.wqes_posted;
+    ep->submitted_count += (uint64_t)(next - db_rung);
+    qp->sq.wq.wqes_posted = next;
+  }
+}
 
 /* ── postRdmaOp: shared post path for Put, PutValue and Get ──────── */
 
@@ -168,10 +401,15 @@ struct PutValuePayloadEncoder {
  *
  * PayloadEncoder runs after this lane's SQ slot is known and either attaches
  * a local SGE or writes inline data into the WQE. */
-template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE, typename PayloadEncoder>
+template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE, uint32_t ThreadWqeBytes = 64u,
+          typename PayloadEncoder>
 NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint16_t ah, uint16_t qpn,
                                           uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
                                           PayloadEncoder payloadEncoder, uint32_t optFlags = ncclGinOptFlagsDefault) {
+  if NCCL_IF_CONSTEXPR (mode == NCCL_GIN_RESOURCE_SHARING_THREAD) {
+    postRdmaOpThread<op, ThreadWqeBytes>(ep, ah, qpn, qkey, dstAddr, dstRkey, payloadEncoder, optFlags);
+    return;
+  }
   efa_cuda_qp* qp = (efa_cuda_qp*)ep->qp;
   uint64_t* submitted_count_ptr = &ep->submitted_count;
   uint64_t* local_cntr_ptr = ep->local_cntr_value;
@@ -549,7 +787,8 @@ NCCL_DEVICE_INLINE static void putImplMode(ncclGinCtx ctx, Coop coop, int peer, 
         const uint32_t dQkey = dev->data.target_qkey[dataIdx];
         for (size_t i = 0; i < nLeading; i++) {
           postRdmaOp<mode>(&dev->data, dAh, dQpn, dQkey, absDstAddr + i * cap, dstRkey,
-                           RdmaSgeEncoder{absSrcAddr + i * cap, srcLkey, (uint32_t)cap}, ncclGinOptFlagsDefault);
+                           RdmaSgeEncoder{absSrcAddr + i * cap, srcLkey, (uint32_t)cap},
+                           ncclGinOptFlagsDefault | kEfaGdaForceRing);
         }
         /* EFA SRD is unordered: the tail landing does not imply the leading
          * chunks landed. So when the tail announces completion (signal or
@@ -619,6 +858,11 @@ NCCL_DEVICE_INLINE static void putImpl(ncclGinCtx ctx, Coop coop, int peer, bool
                                        ncclGinDescriptorSmem* descriptor, cuda::thread_scope required,
                                        cuda::thread_scope given, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    putImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes,
+                                                  signal, signalOp, signalOpArg, hasCounter, counterId, hasDescriptor,
+                                                  descriptor, required, given, optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     putImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes, signal,
                                                signalOp, signalOpArg, hasCounter, counterId, hasDescriptor, descriptor,
@@ -677,8 +921,10 @@ NCCL_DEVICE_INLINE static void getImplMode(ncclGinCtx ctx, Coop coop, int peer, 
     uint64_t localAddr = absLocalAddr;
     do {
       const size_t chunk = (remaining > cap) ? cap : remaining;
+      /* THREAD mode rings every Get: PoC deferral covers Put only. */
       postRdmaOp<mode, EFA_GDA_RDMA_READ>(&dev->data, ah, qpn, qkey, remoteAddr, remoteRkey,
-                                          RdmaSgeEncoder{localAddr, localLkey, (uint32_t)chunk}, optFlags);
+                                          RdmaSgeEncoder{localAddr, localLkey, (uint32_t)chunk},
+                                          optFlags | kEfaGdaForceRing);
       remoteAddr += chunk;
       localAddr += chunk;
       remaining -= chunk;
@@ -693,6 +939,10 @@ template <typename Coop>
 NCCL_DEVICE_INLINE static void getImpl(ncclGinCtx ctx, Coop coop, int peer, ncclGinWindow_t remoteWin, size_t remoteOff,
                                        ncclGinWindow_t localWin, size_t localOff, size_t bytes, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    getImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, remoteWin, remoteOff, localWin, localOff, bytes,
+                                                  optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     getImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, remoteWin, remoteOff, localWin, localOff, bytes,
                                                optFlags);
@@ -754,15 +1004,19 @@ NCCL_DEVICE_INLINE static void putValueImplMode(ncclGinCtx ctx, Coop coop, int p
     uint32_t dstRkey = dstMh->peers[peer].rkey;
 
     PutValuePayloadEncoder<T> payloadEncoder(srcVal);
-    postRdmaOp<mode>(ep, ah, qpn, qkey, absDstAddr, dstRkey, payloadEncoder, ncclGinOptFlagsDefault);
+    /* The PutValue endpoint uses the 128-byte WQE; THREAD mode rings every PutValue. */
+    postRdmaOp<mode, EFA_GDA_RDMA_WRITE, 128u>(ep, ah, qpn, qkey, absDstAddr, dstRkey, payloadEncoder,
+                                               ncclGinOptFlagsDefault | kEfaGdaForceRing);
 
     /* Remaining (signalCount - 1) signal increments: 0-byte writes to
      * the peer scratch region on the DATA endpoint. The loop body is empty
      * unless signalCount > 1, which implies an INDEXED Add (and thus a
      * signal endpoint target). */
     for (uint32_t k = 1u; k < signalCount; k++) {
-      postRdmaOp<mode>(ep, ah, qpn, qkey, dev->scratch_remote_addrs[peer], dev->scratch_remote_rkeys[peer],
-                       RdmaSgeEncoder{dev->scratch_local_addr, dev->scratch_lkey, 0u});
+      postRdmaOp<mode, EFA_GDA_RDMA_WRITE, 128u>(ep, ah, qpn, qkey, dev->scratch_remote_addrs[peer],
+                                                 dev->scratch_remote_rkeys[peer],
+                                                 RdmaSgeEncoder{dev->scratch_local_addr, dev->scratch_lkey, 0u},
+                                                 ncclGinOptFlagsDefault | kEfaGdaForceRing);
     }
   }
   (void)hasDescriptor;
@@ -781,6 +1035,11 @@ NCCL_DEVICE_INLINE static void putValueImpl(ncclGinCtx ctx, Coop coop, int peer,
                                             uint64_t signalOpArg, bool hasDescriptor, ncclGinDescriptorSmem* descriptor,
                                             cuda::thread_scope required, cuda::thread_scope given, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    putValueImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, dstWin, dstOff, srcVal, signal, signalOp,
+                                                       signalOpArg, hasDescriptor, descriptor, required, given,
+                                                       optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     putValueImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, dstWin, dstOff, srcVal, signal, signalOp,
                                                     signalOpArg, hasDescriptor, descriptor, required, given, optFlags);
@@ -820,6 +1079,15 @@ NCCL_DEVICE_INLINE static ncclResult_t flushImplMode(ncclGinCtx ctx, Coop coop, 
     auto wait_for_endpoint = [abortFlag, startCycle,
                               timeoutCycles](nccl_ofi_gin_gdaki_dev_endpoint_handle& ep) -> ncclResult_t {
       cuda::atomic_ref<uint64_t, ncclGinScope<mode>> target_ref(ep.submitted_count);
+
+#if NCCL_GIN_EFA_GDA_THREAD_VALIDATE
+      if NCCL_IF_CONSTEXPR (mode == NCCL_GIN_RESOURCE_SHARING_THREAD) {
+        /* A deferred WQE is not in submitted_count, so flushing past it would
+         * return with that WQE never handed to the NIC. */
+        const efa_cuda_qp* qp = (const efa_cuda_qp*)ep.qp;
+        assert(qp->sq.wq.pc == qp->sq.wq.wqes_posted && "EFA GDA THREAD: flush with un-rung WQEs");
+      }
+#endif
 
       /* Drain-to-zero: outstanding = (submitted - completed) reduced to
        * 31 bits, since the NIC FI_WRITE + FI_READ counter wraps at 2^31. Wait until
@@ -866,6 +1134,8 @@ template <bool HasTimeout, typename Coop>
 NCCL_DEVICE_INLINE static ncclResult_t flushImpl(ncclGinCtx ctx, Coop coop, cuda::memory_order ord, uint32_t* abortFlag,
                                                  uint64_t timeoutCycles) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    return flushImplMode<HasTimeout, NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, ord, abortFlag, timeoutCycles);
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     return flushImplMode<HasTimeout, NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, ord, abortFlag, timeoutCycles);
   default:
