@@ -171,8 +171,10 @@ struct PutValuePayloadEncoder {
  *
  * A put rings (one system fence, then the doorbell) unless the caller set
  * ncclGinOptFlagsAggregateRequests or it does not close a batch of
- * NCCL_GIN_EFA_GDA_DOORBELL_BATCH WQEs; a deferred put issues neither. The
- * caller must ring before any flush or kernel exit, within max_batch. */
+ * NCCL_GIN_EFA_GDA_DOORBELL_BATCH WQEs; a deferred put issues neither, except
+ * that a deferred run is capped at max_batch un-rung WQEs (the EFA staging
+ * limit): the put that would exceed it rings. The caller must still ring
+ * before any flush or kernel exit. */
 #ifndef NCCL_GIN_EFA_GDA_DOORBELL_BATCH
 #define NCCL_GIN_EFA_GDA_DOORBELL_BATCH 1
 #endif
@@ -249,7 +251,13 @@ NCCL_DEVICE_INLINE static void postPutThread(nccl_ofi_gin_gdaki_dev_endpoint_han
   EfaGdaWriteWqeRegs(phase, ah, qpn, qkey, dstAddr, dstRkey, sge)
     .storeMmio((uint64_t)__cvta_generic_to_global(qp->sq.wq.buf + sq_idx * 64u));
 
-  if ((optFlags & ncclGinOptFlagsAggregateRequests) == 0 && (next & (kEfaGdaDoorbellBatch - 1u)) == 0) {
+  /* Ring unless the caller defers and the un-rung run stays within the EFA
+   * staging limit (max_batch): like the shared path, a deferred put that would
+   * leave more than max_batch WQEs un-rung rings instead of stalling the NIC. */
+  const bool ring = (optFlags & ncclGinOptFlagsAggregateRequests) == 0
+                      ? (next & (kEfaGdaDoorbellBatch - 1u)) == 0
+                      : (next - qp->sq.wq.wqes_posted) >= qp->sq.wq.max_batch;
+  if (ring) {
     /* One fence publishes every WQE this thread wrote since the last ring. */
     cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
     asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;"
