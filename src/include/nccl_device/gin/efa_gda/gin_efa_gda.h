@@ -162,8 +162,12 @@ struct PutValuePayloadEncoder {
  *
  * Contract (unchecked): one CUDA thread posts to each QP. The SQ cursors then
  * have one writer and use plain loads and stores. Only Put is specialized;
- * THREAD-mode Get, PutValue and >1 GiB Puts are unsupported. Do not mix THREAD
- * posts with CTA/GPU posts on one QP (wqes_completed is not maintained).
+ * THREAD-mode Get, PutValue and >1 GiB Puts are unsupported. Do not post in
+ * THREAD and CTA/GPU mode on one QP concurrently. Sequential mixing is
+ * supported: every slot a THREAD put reserves is released (wqes_completed
+ * follows pc), so a later CTA/GPU post on the same QP — e.g. an all-context
+ * GIN barrier after a synchronization — finds the shared-path rendezvous
+ * cursor where it expects it instead of spinning forever.
  *
  * A put rings (one system fence, then the doorbell) unless the caller set
  * ncclGinOptFlagsAggregateRequests or it does not close a batch of
@@ -237,6 +241,8 @@ NCCL_DEVICE_INLINE static void postPutThread(nccl_ofi_gin_gdaki_dev_endpoint_han
     asm volatile("ld.relaxed.sys.global.u64 %0, [%1];" : "=l"(done) : "l"(cntr));
   } while (((next - (uint32_t)done) & EFA_CNTR_MASK) > ep->sq_size);
   qp->sq.wq.pc = next;
+  /* Release the slot for any later shared-mode poster (see the contract above). */
+  qp->sq.wq.wqes_completed = next;
 
   const uint32_t sq_idx = slot & qp->sq.wq.queue_mask;
   const uint32_t phase = (slot >> qp->sq.wq.queue_size_shift) & 1u;
