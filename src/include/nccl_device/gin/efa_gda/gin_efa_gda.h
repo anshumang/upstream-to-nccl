@@ -158,6 +158,148 @@ struct PutValuePayloadEncoder {
   }
 };
 
+/* ── Thread-exclusive Put (NCCL_GIN_RESOURCE_SHARING_THREAD) ─────────
+ * One thread posts per QP, so the SQ cursors use plain loads and stores. Only
+ * Put is specialized; Get and PutValue take the GPU path. Do not mix THREAD and
+ * CTA/GPU posting on one QP without a flush in between. */
+
+/* Positions of the efa_io_tx_wqe fields the THREAD put writes, taken from
+ * efa_io_defs.h: a field at byte offset `off` sits at bit 8*(off % 8) of
+ * 64-bit word off / 8. The control values come from the same header; its
+ * _MASK macros expand to BIT(), which efa_cuda_dp_impl.cuh leaves undefined. */
+namespace efa_gda_wqe {
+NCCL_HOST_DEVICE_INLINE constexpr unsigned word(size_t off) {
+  return (unsigned)(off / 8u);
+}
+NCCL_HOST_DEVICE_INLINE constexpr unsigned bit(size_t off) {
+  return 8u * (unsigned)(off % 8u);
+}
+NCCL_HOST_DEVICE_INLINE constexpr bool inWord(size_t off, size_t size) {
+  return bit(off) + 8u * size <= 64u;
+}
+
+constexpr size_t kMeta = offsetof(struct efa_io_tx_wqe, meta);
+constexpr size_t kReqId = kMeta + offsetof(struct efa_io_tx_meta_desc, req_id);
+constexpr size_t kCtrl1 = kMeta + offsetof(struct efa_io_tx_meta_desc, ctrl1);
+constexpr size_t kCtrl2 = kMeta + offsetof(struct efa_io_tx_meta_desc, ctrl2);
+constexpr size_t kDestQp = kMeta + offsetof(struct efa_io_tx_meta_desc, dest_qp_num);
+constexpr size_t kLength = kMeta + offsetof(struct efa_io_tx_meta_desc, length);
+constexpr size_t kAh = kMeta + offsetof(struct efa_io_tx_meta_desc, ah);
+constexpr size_t kCtrl3 = kMeta + offsetof(struct efa_io_tx_meta_desc, ctrl3);
+constexpr size_t kQkey = kMeta + offsetof(struct efa_io_tx_meta_desc, qkey);
+constexpr size_t kReqIdEx = kMeta + offsetof(struct efa_io_tx_meta_desc, req_id_ex);
+constexpr size_t kRemote = offsetof(struct efa_io_tx_wqe, data.rdma_req.remote_mem);
+constexpr size_t kRemLen = kRemote + offsetof(struct efa_io_remote_mem_addr, length);
+constexpr size_t kRemRkey = kRemote + offsetof(struct efa_io_remote_mem_addr, rkey);
+constexpr size_t kRemAddr = kRemote + offsetof(struct efa_io_remote_mem_addr, buf_addr_lo);
+constexpr size_t kLocal = offsetof(struct efa_io_tx_wqe, data.rdma_req.local_mem);
+constexpr size_t kLocLen = kLocal + offsetof(struct efa_io_tx_buf_desc, length);
+constexpr size_t kLocLkey = kLocal + offsetof(struct efa_io_tx_buf_desc, lkey);
+constexpr size_t kLocAddr = kLocal + offsetof(struct efa_io_tx_buf_desc, buf_addr_lo);
+
+#pragma push_macro("BIT")
+#undef BIT
+#define BIT(nr) (1ull << (nr))
+constexpr uint64_t kCtrl1Val =
+  EFA_IO_TX_META_DESC_META_DESC_MASK | ((uint64_t)EFA_IO_RDMA_WRITE & EFA_IO_TX_META_DESC_OP_TYPE_MASK);
+constexpr uint64_t kCtrl2Val =
+  EFA_IO_TX_META_DESC_FIRST_MASK | EFA_IO_TX_META_DESC_LAST_MASK | EFA_IO_TX_META_DESC_COMP_REQ_MASK;
+constexpr uint32_t kPhaseMask = (uint32_t)EFA_IO_TX_META_DESC_PHASE_MASK;
+constexpr uint64_t kCtrl3Val =
+  (uint64_t)EFA_IO_PROCESSING_HINT_BURST_PPS_SENSITIVE & EFA_IO_TX_META_DESC_PROCESSING_HINTS_MASK;
+#undef BIT
+#pragma pop_macro("BIT")
+
+static_assert(sizeof(struct efa_io_tx_wqe) == 64u, "efa_io_tx_wqe must be 64 bytes");
+/* EfaGdaWriteWqeRegs builds each 64-bit word as one expression, so the fields
+ * it combines must share a word, and the 64-bit addresses span adjacent
+ * buf_addr_lo / buf_addr_hi halves. */
+static_assert(
+  word(kReqId) == 0 && word(kCtrl1) == 0 && word(kCtrl2) == 0 && word(kDestQp) == 0 && word(kLength) == 0 &&
+    word(kAh) == 1 && word(kCtrl3) == 1 && word(kQkey) == 2 && word(kReqIdEx) == 3 && word(kRemLen) == 4 &&
+    word(kRemRkey) == 4 && word(kRemAddr) == 5 && word(kLocLen) == 6 && word(kLocLkey) == 6 && word(kLocAddr) == 7 &&
+    inWord(kReqIdEx, sizeof(efa_io_tx_meta_desc::req_id_ex)) && inWord(kRemAddr, 8) && inWord(kLocAddr, 8) &&
+    offsetof(struct efa_io_remote_mem_addr, buf_addr_hi) == offsetof(struct efa_io_remote_mem_addr, buf_addr_lo) + 4 &&
+    offsetof(struct efa_io_tx_buf_desc, buf_addr_hi) == offsetof(struct efa_io_tx_buf_desc, buf_addr_lo) + 4,
+  "efa_io_tx_wqe fields moved across 64-bit words; regroup EfaGdaWriteWqeRegs");
+} // namespace efa_gda_wqe
+
+/* The 64-byte RDMA-write WQE (one SGE) as eight 64-bit register words, written
+ * straight to the SQ slot. Requires the 64-byte WQE that the plugin configures
+ * on the data and counter endpoints. The words are packed by hand because
+ * filling efa_io_tx_wqe by field compiles to IMAD chains on the issue path and
+ * costs 5-25% at small sizes (H200/B200/B300, CUDA 13.1/13.2). */
+struct EfaGdaWriteWqeRegs {
+  uint64_t w[8];
+
+  NCCL_DEVICE_INLINE EfaGdaWriteWqeRegs(uint32_t phase, uint16_t ah, uint16_t qpn, uint32_t qkey, uint64_t dstAddr,
+                                        uint32_t dstRkey, const RdmaSgeEncoder& sge) {
+    using namespace efa_gda_wqe;
+    const uint64_t reqId = threadIdx.x;
+    w[0] = ((reqId & 0xFFFFull) << bit(kReqId)) | (kCtrl1Val << bit(kCtrl1)) |
+           ((kCtrl2Val | (phase & kPhaseMask)) << bit(kCtrl2)) | ((uint64_t)qpn << bit(kDestQp)) |
+           (1ull << bit(kLength)); /* one SGE */
+    w[1] = ((uint64_t)ah << bit(kAh)) | (kCtrl3Val << bit(kCtrl3));
+    w[2] = (uint64_t)qkey << bit(kQkey);
+    w[3] = (reqId >> 16) << bit(kReqIdEx); /* req_id_ex: the request id above its low 16 bits */
+    w[4] = ((uint64_t)dstRkey << bit(kRemRkey)) | ((uint64_t)sge.bytes << bit(kRemLen));
+    w[5] = dstAddr << bit(kRemAddr);
+    w[6] =
+      ((uint64_t)(sge.lkey & EFA_IO_TX_BUF_DESC_LKEY_MASK) << bit(kLocLkey)) | ((uint64_t)sge.bytes << bit(kLocLen));
+    w[7] = sge.addr << bit(kLocAddr);
+  }
+
+  NCCL_DEVICE_INLINE void storeMmio(uint64_t dst) const {
+#pragma unroll
+    for (uint32_t i = 0; i < 8; i++) {
+      asm volatile("st.mmio.relaxed.sys.global.b64 [%0], %1;" : : "l"(dst + i * 8u), "l"(w[i]) : "memory");
+    }
+  }
+};
+
+NCCL_DEVICE_INLINE static void postPutThread(nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint16_t ah, uint16_t qpn,
+                                             uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
+                                             const RdmaSgeEncoder& sge, uint32_t optFlags) {
+  efa_cuda_qp* qp = (efa_cuda_qp*)ep->qp;
+  const uint32_t slot = qp->sq.wq.pc;
+  const uint32_t next = slot + 1u;
+
+  /* SQ credit: explicit global relaxed system load of the NIC counter
+   * (cuda::atomic_ref on a generic pointer adds an LDL + NANOSLEEP fallback).
+   * TODO: cache the last value read and re-read only when it shows no free slot. */
+  const uint64_t cntr = (uint64_t)__cvta_generic_to_global(ep->local_cntr_value);
+  uint64_t done;
+  do {
+    asm volatile("ld.relaxed.sys.global.u64 %0, [%1];" : "=l"(done) : "l"(cntr));
+  } while (((next - (uint32_t)done) & EFA_CNTR_MASK) > ep->sq_size);
+  qp->sq.wq.pc = next;
+
+  const uint32_t sq_idx = slot & qp->sq.wq.queue_mask;
+  const uint32_t phase = (slot >> qp->sq.wq.queue_size_shift) & 1u;
+  EfaGdaWriteWqeRegs(phase, ah, qpn, qkey, dstAddr, dstRkey, sge)
+    .storeMmio((uint64_t)__cvta_generic_to_global(qp->sq.wq.buf + sq_idx * 64u));
+  /* Release the written slot for any later shared-mode poster (see the
+   * contract above); kept outside the ring branch so a deferred put never
+   * leaves this cursor behind pc. */
+  qp->sq.wq.wqes_completed = next;
+
+  /* Without a post-doorbell fence, the next batch may reach the NIC before
+   * this batch's doorbell. Cap each batch at half max_batch so at most two
+   * batches arrive between doorbells, within EFA's submission limit. */
+  const uint32_t safeBatch = qp->sq.wq.max_batch > 1u ? qp->sq.wq.max_batch / 2u : 1u;
+  const bool ring = (optFlags & ncclGinOptFlagsAggregateRequests) == 0 || (next - qp->sq.wq.wqes_posted) >= safeBatch;
+  if (ring) {
+    /* One fence publishes every WQE this thread wrote since the last ring. */
+    cuda::atomic_thread_fence(cuda::memory_order_acq_rel, cuda::thread_scope_system);
+    asm volatile("st.mmio.relaxed.sys.global.b32 [%0], %1;"
+                 :
+                 : "l"((uint64_t)__cvta_generic_to_global(qp->sq.wq.db)), "r"(next)
+                 : "memory");
+    ep->submitted_count += (uint64_t)(next - qp->sq.wq.wqes_posted);
+    qp->sq.wq.wqes_posted = next;
+  }
+}
+
 /* ── postRdmaOp: shared post path for Put, PutValue and Get ──────── */
 
 /* Posts an RDMA operation on `ep`'s local QP to the remote QP given by
@@ -172,6 +314,11 @@ template <ncclGinResourceSharingMode mode, efaGdaRdmaOp op = EFA_GDA_RDMA_WRITE,
 NCCL_DEVICE_INLINE static void postRdmaOp(nccl_ofi_gin_gdaki_dev_endpoint_handle* ep, uint16_t ah, uint16_t qpn,
                                           uint32_t qkey, uint64_t dstAddr, uint32_t dstRkey,
                                           PayloadEncoder payloadEncoder, uint32_t optFlags = ncclGinOptFlagsDefault) {
+  if NCCL_IF_CONSTEXPR (mode == NCCL_GIN_RESOURCE_SHARING_THREAD) {
+    static_assert(op == EFA_GDA_RDMA_WRITE, "EFA GDA THREAD mode specializes Put only");
+    postPutThread(ep, ah, qpn, qkey, dstAddr, dstRkey, payloadEncoder, optFlags);
+    return;
+  }
   efa_cuda_qp* qp = (efa_cuda_qp*)ep->qp;
   uint64_t* submitted_count_ptr = &ep->submitted_count;
   uint64_t* local_cntr_ptr = ep->local_cntr_value;
@@ -619,6 +766,11 @@ NCCL_DEVICE_INLINE static void putImpl(ncclGinCtx ctx, Coop coop, int peer, bool
                                        ncclGinDescriptorSmem* descriptor, cuda::thread_scope required,
                                        cuda::thread_scope given, uint32_t optFlags) {
   switch ((ncclGinResourceSharingMode)ctx.resourceSharingMode) {
+  case NCCL_GIN_RESOURCE_SHARING_THREAD:
+    putImplMode<NCCL_GIN_RESOURCE_SHARING_THREAD>(ctx, coop, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes,
+                                                  signal, signalOp, signalOpArg, hasCounter, counterId, hasDescriptor,
+                                                  descriptor, required, given, optFlags);
+    break;
   case NCCL_GIN_RESOURCE_SHARING_CTA:
     putImplMode<NCCL_GIN_RESOURCE_SHARING_CTA>(ctx, coop, peer, hasWins, dstWin, dstOff, srcWin, srcOff, bytes, signal,
                                                signalOp, signalOpArg, hasCounter, counterId, hasDescriptor, descriptor,
