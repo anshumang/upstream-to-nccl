@@ -589,6 +589,13 @@ NCCL_DEVICE_INLINE bool ncclGin_BackendMask<beMask>::_supportsStrongSignal() con
 
 #ifdef __CUDACC__
 template <unsigned beMask>
+NCCL_DEVICE_INLINE uint32_t ncclGin_BackendMask<beMask>::_version() const {
+  return comm.version;
+}
+#endif
+
+#ifdef __CUDACC__
+template <unsigned beMask>
 template <typename T,
           typename RemoteAction, // one of ncclGin_{None|SignalInc}
           typename LocalAction, // one of ncclGin_{None|CounterInc}

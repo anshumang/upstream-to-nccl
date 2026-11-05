@@ -134,6 +134,11 @@ struct ncclGin_BackendMask {
 
   NCCL_DEVICE_INLINE bool _supportsStrongSignal() const;
 
+  // NCCL_VERSION_CODE the device communicator was created for: the NCCL headers the device code was
+  // compiled against, or the NCCL library when the devComm was created with useRuntimeVersion (JIT-compiled
+  // device code). Device code selects a code path by NCCL version with this instead of a feature macro.
+  NCCL_DEVICE_INLINE uint32_t _version() const;
+
   template <typename Coop = ncclCoopThread, typename DescriptorSmem = ncclGin_None>
   NCCL_DEVICE_INLINE void flushAsync(ncclTeam team, uint32_t peer, ncclGinRequest_t* outRequest,
                                      Coop coop = ncclCoopThread{}, uint32_t optFlags = ncclGinOptFlagsDefault,
